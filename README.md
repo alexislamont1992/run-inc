@@ -33,7 +33,8 @@ Files: `index.html`, `styles.css`, `app.js`, `config.js` (Supabase URL/key, race
 - Fill in any two of **distance, time and pace/speed** and the app calculates the third (shown in orange). Durations accept `45` (minutes), `45:30` or `1:05:00`.
 - **Intervals** get rep blocks with a split time per rep. **Long** and **Tempo** runs get simple blocks (e.g. warm-up / tempo / cool-down), each with distance, target pace or time, and an actual time. *Use as planned/actual total* copies the block totals into the run.
 - **⧉ Copy this workout** (at the bottom of the editor) copies one run to any days this week or next week, for any of the three runners.
-- Quick copy: **long-press a card** (or right-click on a computer), then tap **⧉ Paste** on any day or runner, in any week. Tap **Done** when finished.
+- Quick copy: **long-press a card** (or tap **⧉** at the top and then a card, or right-click on a computer), then tap **⧉ Paste** on any day or runner, in any week. Tap **Done** when finished.
+- After changing `app.js`, `styles.css` or `config.js`, bump the `?v=` number in `index.html` so phones load the new files right away.
 - If `config.js` is empty, the app runs in **Demo mode** and stores data only in that browser.
 
 ## Notes

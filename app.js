@@ -592,7 +592,7 @@
       <div class="chips-label">This week</div><div class="chips days">${days(wk)}</div>
       <div class="chips-label">Next week</div><div class="chips days">${days(addDays(wk, 7))}</div>
       <button type="button" class="btn small primary" data-act="copyrun">Copy</button>
-      <p class="hint" style="margin-top:8px">Copies the plan as it is in this form (type, distance, time, blocks, notes) as “planned”.<br>Tip: long-press a card in the grid to copy it without opening it.</p>`;
+      <p class="hint" style="margin-top:8px">Copies the plan as it is in this form (type, distance, time, blocks, notes) as “planned”.<br>Tip: long-press a card in the grid (or tap ⧉ at the top, then the card) to copy it without opening it.</p>`;
     box.open = open;
   }
 
@@ -832,16 +832,25 @@
 
   // ---------- Quick copy: long-press (or right-click) a card, then tap + to paste ----------
   let clip = null;
+  let picking = false; // header ⧉ button pressed: next tapped card is copied
   function startClip(run) {
     clip = run;
+    picking = false;
     navigator.vibrate?.(15);
     render();
   }
-  function endClip() { clip = null; render(); }
+  function endClip() { clip = null; picking = false; render(); }
   function renderClipbar() {
     const bar = $('#clipbar');
     document.body.classList.toggle('copying', !!clip);
-    bar.hidden = !clip;
+    document.body.classList.toggle('picking', picking);
+    $('#copyModeBtn').classList.toggle('on', !!clip || picking);
+    bar.hidden = !clip && !picking;
+    if (picking) {
+      bar.innerHTML = `<span class="cliptext"><b>Copy a run</b><small>Tap the card you want to copy</small></span>
+        <button class="clipdone" data-clipdone>Cancel</button>`;
+      return;
+    }
     if (!clip) { bar.innerHTML = ''; return; }
     const km = num(clip.planned_distance_km);
     bar.innerHTML = `<span class="card-dot ${typeClass(clip.type)}"></span>
@@ -879,24 +888,41 @@
 
   // Long-press a card to pick it up for quick copy
   const grid = $('#grid');
+  // Fingers use touch events (more reliable than pointer events on iOS); the mouse uses pointer events.
   let press = null, suppressClick = false;
   const cancelPress = () => { if (press) { clearTimeout(press.timer); press = null; } };
-  grid.addEventListener('pointerdown', (e) => {
-    suppressClick = false;
-    const card = e.target.closest('.card');
-    if (!card || (e.pointerType === 'mouse' && e.button !== 0)) return;
+  function beginPress(card, x, y) {
+    cancelPress();
     press = {
-      x: e.clientX, y: e.clientY,
+      x, y,
       timer: setTimeout(() => {
         press = null;
         const r = runs.get(card.dataset.id);
         if (r) { suppressClick = true; startClip(r); }
       }, 450),
     };
+  }
+  const movedTooFar = (x, y) => press && Math.hypot(x - press.x, y - press.y) > 14;
+  grid.addEventListener('touchstart', (e) => {
+    suppressClick = false;
+    const card = e.target.closest('.card');
+    if (!card || e.touches.length !== 1) { cancelPress(); return; }
+    beginPress(card, e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: true });
+  grid.addEventListener('touchmove', (e) => { const t = e.touches[0]; if (t && movedTooFar(t.clientX, t.clientY)) cancelPress(); }, { passive: true });
+  grid.addEventListener('touchend', (e) => {
+    cancelPress();
+    if (suppressClick && e.cancelable) e.preventDefault(); // no editor after a long-press
   });
-  grid.addEventListener('pointermove', (e) => { if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) cancelPress(); });
-  ['pointerup', 'pointercancel', 'pointerleave'].forEach((t) => grid.addEventListener(t, cancelPress));
-  window.addEventListener('scroll', cancelPress, { passive: true });
+  grid.addEventListener('touchcancel', cancelPress);
+  grid.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'mouse') return;
+    suppressClick = false;
+    const card = e.target.closest('.card');
+    if (card && e.button === 0) beginPress(card, e.clientX, e.clientY);
+  });
+  grid.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' && movedTooFar(e.clientX, e.clientY)) cancelPress(); });
+  grid.addEventListener('pointerup', (e) => { if (e.pointerType === 'mouse') cancelPress(); });
   grid.addEventListener('contextmenu', (e) => {
     const card = e.target.closest('.card');
     if (!card) return;
@@ -909,14 +935,25 @@
   grid.addEventListener('click', (e) => {
     if (suppressClick) { suppressClick = false; return; }
     const card = e.target.closest('.card');
-    if (card) { const r = runs.get(card.dataset.id); if (r) openEditor(r); return; }
+    if (card) {
+      const r = runs.get(card.dataset.id);
+      if (r && picking) startClip(r);
+      else if (r) openEditor(r);
+      return;
+    }
     const add = e.target.closest('[data-add]');
     if (!add) return;
+    if (picking) { toast('Tap a card to copy it'); return; }
     if (clip) pasteClip(add.dataset.add, add.dataset.date);
     else openEditor({ id: uuid(), runner: add.dataset.add, run_date: add.dataset.date, type: 'Easy', status: 'planned', intervals: [] });
   });
+  $('#copyModeBtn').onclick = () => {
+    if (clip || picking) { endClip(); return; }
+    picking = true;
+    render();
+  };
   $('#clipbar').addEventListener('click', (e) => { if (e.target.closest('[data-clipdone]')) endClip(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && clip && !dlg.open) endClip(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && (clip || picking) && !dlg.open) endClip(); });
   $('#colheads').addEventListener('click', (e) => {
     const b = e.target.closest('[data-copy]');
     if (b) copyLastWeek(b.dataset.copy);

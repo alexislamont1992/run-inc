@@ -353,3 +353,7 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 40%, transparent);
 }
+.grid { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.weeknav .copymode-btn { font-size: 17px; }
+.weeknav .copymode-btn.on { background: var(--accent); color: var(--accent-ink); }
+.picking .card { outline: 2px dashed color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; }
