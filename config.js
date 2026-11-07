@@ -1,0 +1,11 @@
+// Fill these in from Supabase: Project Settings → API (or "Connect").
+// The anon / publishable key is meant to be public — it only grants what the
+// RLS policies in schema.sql allow (read/write on the runs table).
+// Leave them empty to run in local demo mode (data stays in this browser).
+window.RUN_CONFIG = {
+  SUPABASE_URL: "",        // e.g. "https://abcdefghijkl.supabase.co"
+  SUPABASE_ANON_KEY: "",   // anon / publishable key
+  RACE_DATE: "2027-05-02",
+  RACE_NAME: "Half Marathon",
+  RUNNERS: ["Alexis", "Ryan", "Justin"],
+};
