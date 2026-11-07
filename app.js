@@ -229,8 +229,8 @@
   }
 
   function renderColheads() {
-    $('#colheads').innerHTML = RUNNERS.map((r) => `
-      <div class="colhead">
+    $('#colheads').innerHTML = RUNNERS.map((r, i) => `
+      <div class="colhead r${i}">
         <span class="name">${esc(r)}</span>
         <button class="copy" data-copy="${esc(r)}" title="Copy last week's plan into this week">⧉ Copy last wk</button>
       </div>`).join('');
@@ -271,9 +271,9 @@
     for (let i = 0; i < 7; i++) {
       const d = addDays(weekStart, i), ds = iso(d);
       html += `<section class="day${ds === t ? ' is-today' : ''}"><h3 class="dayhead">${fmtDay(d)}${ds === t ? ' · Today' : ''}${ds === iso(RACE_DATE) ? ' · 🏁 RACE' : ''}</h3><div class="cells">`;
-      for (const runner of RUNNERS) {
+      for (const [ri, runner] of RUNNERS.entries()) {
         const list = runsFor(runner, d, d);
-        html += `<div class="cell">${list.map(cardHTML).join('')}<button class="add" data-add="${esc(runner)}" data-date="${ds}" aria-label="Add run for ${esc(runner)} on ${fmtDay(d)}">+</button></div>`;
+        html += `<div class="cell r${ri}">${list.map(cardHTML).join('')}<button class="add" data-add="${esc(runner)}" data-date="${ds}" aria-label="Add run for ${esc(runner)} on ${fmtDay(d)}">+</button></div>`;
       }
       html += '</div></section>';
     }
@@ -300,10 +300,10 @@
   }
 
   function renderTotals() {
-    $('#totals').innerHTML = RUNNERS.map((runner) => {
+    $('#totals').innerHTML = RUNNERS.map((runner, ri) => {
       const t = weekTotals(runner);
       const pct = t.plannedKm ? Math.min(100, (t.doneKm / t.plannedKm) * 100) : (t.doneKm ? 100 : 0);
-      return `<div class="tot" title="${esc(runner)} — week totals">
+      return `<div class="tot r${ri}" title="${esc(runner)} — week totals">
         <div class="tkm">${fmtKm(t.doneKm)}<small> / ${fmtKm(t.plannedKm)} km</small></div>
         <div class="bar"><i style="width:${pct}%"></i></div>
         <div class="tline">🏃 ${t.doneRuns}/${t.plannedRuns} runs</div>
@@ -587,7 +587,7 @@
     const days = (start) => Array.from({ length: 7 }, (_, i) => dayChip(addDays(start, i))).join('');
     box.innerHTML = `<summary>⧉ Copy this workout to other days…</summary>
       <div class="chips-label">For</div>
-      <div class="chips">${RUNNERS.map((r) => `<label class="chip"><input type="checkbox" name="copy_runner" value="${esc(r)}" ${r === draft.runner ? 'checked' : ''}><span>${esc(r)}</span></label>`).join('')}</div>
+      <div class="chips">${RUNNERS.map((r, i) => `<label class="chip r${i}"><input type="checkbox" name="copy_runner" value="${esc(r)}" ${r === draft.runner ? 'checked' : ''}><span>${esc(r)}</span></label>`).join('')}</div>
       <div class="chips-label">This week</div><div class="chips days">${days(wk)}</div>
       <div class="chips-label">Next week</div><div class="chips days">${days(addDays(wk, 7))}</div>
       <button type="button" class="btn small primary" data-act="copyrun">Copy</button>
