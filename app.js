@@ -257,7 +257,7 @@
     const iv = intervalsSummary(r.intervals) || segmentsSummary(r.intervals);
     if (iv) meta = meta ? `${iv} · ${meta}` : iv;
     const showType = r.status === 'swapped' ? (r.actual_type || r.type) : r.type;
-    return `<button class="card ${typeClass(showType)} s-${r.status}" data-id="${esc(r.id)}">
+    return `<button class="card ${typeClass(showType)} s-${r.status}${clip && clip.id === r.id ? ' is-clip' : ''}" data-id="${esc(r.id)}">
       <span class="ctype">${typeLine}</span>
       ${dist ? `<span class="cdist">${dist}</span>` : ''}
       ${meta ? `<span class="cmeta">${esc(meta)}</span>` : ''}
@@ -273,7 +273,7 @@
       html += `<section class="day${ds === t ? ' is-today' : ''}"><h3 class="dayhead">${fmtDay(d)}${ds === t ? ' · Today' : ''}${ds === iso(RACE_DATE) ? ' · 🏁 RACE' : ''}</h3><div class="cells">`;
       for (const [ri, runner] of RUNNERS.entries()) {
         const list = runsFor(runner, d, d);
-        html += `<div class="cell r${ri}">${list.map(cardHTML).join('')}<button class="add" data-add="${esc(runner)}" data-date="${ds}" aria-label="Add run for ${esc(runner)} on ${fmtDay(d)}">+</button></div>`;
+        html += `<div class="cell r${ri}">${list.map(cardHTML).join('')}<button class="add" data-add="${esc(runner)}" data-date="${ds}" aria-label="${clip ? 'Paste' : 'Add run'} for ${esc(runner)} on ${fmtDay(d)}">${clip ? '⧉ Paste' : '+'}</button></div>`;
       }
       html += '</div></section>';
     }
@@ -317,6 +317,7 @@
     renderWeekLabel();
     renderGrid();
     renderTotals();
+    renderClipbar();
   }
 
   // ---------- Editor ----------
@@ -591,7 +592,7 @@
       <div class="chips-label">This week</div><div class="chips days">${days(wk)}</div>
       <div class="chips-label">Next week</div><div class="chips days">${days(addDays(wk, 7))}</div>
       <button type="button" class="btn small primary" data-act="copyrun">Copy</button>
-      <p class="hint" style="margin-top:8px">Copies the plan as it is in this form (type, distance, time, blocks, notes) as “planned”.</p>`;
+      <p class="hint" style="margin-top:8px">Copies the plan as it is in this form (type, distance, time, blocks, notes) as “planned”.<br>Tip: long-press a card in the grid to copy it without opening it.</p>`;
     box.open = open;
   }
 
@@ -829,6 +830,37 @@
     try { await Store.insertMany(rows); render(); toast(`Copied ${rows.length} run(s) for ${runner}`); } catch (err) { toast('Could not copy: ' + err.message); }
   }
 
+  // ---------- Quick copy: long-press (or right-click) a card, then tap + to paste ----------
+  let clip = null;
+  function startClip(run) {
+    clip = run;
+    navigator.vibrate?.(15);
+    render();
+  }
+  function endClip() { clip = null; render(); }
+  function renderClipbar() {
+    const bar = $('#clipbar');
+    document.body.classList.toggle('copying', !!clip);
+    bar.hidden = !clip;
+    if (!clip) { bar.innerHTML = ''; return; }
+    const km = num(clip.planned_distance_km);
+    bar.innerHTML = `<span class="card-dot ${typeClass(clip.type)}"></span>
+      <span class="cliptext"><b>Copying ${esc(clip.type)}${km !== null ? ` · ${fmtKm(km)} km` : ''}</b>
+      <small>Tap any “Paste” to add it · from ${esc(clip.runner)}, ${fmtDay(parseISO(clip.run_date))}</small></span>
+      <button class="clipdone" data-clipdone>Done</button>`;
+  }
+  async function pasteClip(runner, run_date) {
+    const blocks = (clip.intervals || [])
+      .filter((b) => (clip.type === 'Intervals' ? b.kind !== 'segment' : SEGMENT_TYPES.includes(clip.type) && b.kind === 'segment'))
+      .map(planOnlyBlock);
+    const row = {
+      id: uuid(), runner, run_date, type: clip.type, status: 'planned',
+      planned_distance_km: clip.planned_distance_km, planned_duration_s: clip.planned_duration_s,
+      notes: clip.notes, intervals: blocks,
+    };
+    try { await Store.insertMany([row]); render(); toast(`Pasted to ${runner} · ${fmtDay(parseISO(run_date))}`); } catch (err) { toast('Could not paste: ' + err.message); }
+  }
+
   // ---------- Toast ----------
   let toastTimer;
   function toast(msg) {
@@ -845,12 +877,46 @@
   $('#todayBtn').onclick = () => setWeek(today());
   $('#datePicker').addEventListener('change', (e) => { if (e.target.value) setWeek(parseISO(e.target.value)); });
 
-  $('#grid').addEventListener('click', (e) => {
+  // Long-press a card to pick it up for quick copy
+  const grid = $('#grid');
+  let press = null, suppressClick = false;
+  const cancelPress = () => { if (press) { clearTimeout(press.timer); press = null; } };
+  grid.addEventListener('pointerdown', (e) => {
+    suppressClick = false;
+    const card = e.target.closest('.card');
+    if (!card || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    press = {
+      x: e.clientX, y: e.clientY,
+      timer: setTimeout(() => {
+        press = null;
+        const r = runs.get(card.dataset.id);
+        if (r) { suppressClick = true; startClip(r); }
+      }, 450),
+    };
+  });
+  grid.addEventListener('pointermove', (e) => { if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) cancelPress(); });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach((t) => grid.addEventListener(t, cancelPress));
+  window.addEventListener('scroll', cancelPress, { passive: true });
+  grid.addEventListener('contextmenu', (e) => {
+    const card = e.target.closest('.card');
+    if (!card) return;
+    e.preventDefault();
+    cancelPress();
+    const r = runs.get(card.dataset.id);
+    if (r && clip?.id !== r.id) startClip(r);
+  });
+
+  grid.addEventListener('click', (e) => {
+    if (suppressClick) { suppressClick = false; return; }
     const card = e.target.closest('.card');
     if (card) { const r = runs.get(card.dataset.id); if (r) openEditor(r); return; }
     const add = e.target.closest('[data-add]');
-    if (add) openEditor({ id: uuid(), runner: add.dataset.add, run_date: add.dataset.date, type: 'Easy', status: 'planned', intervals: [] });
+    if (!add) return;
+    if (clip) pasteClip(add.dataset.add, add.dataset.date);
+    else openEditor({ id: uuid(), runner: add.dataset.add, run_date: add.dataset.date, type: 'Easy', status: 'planned', intervals: [] });
   });
+  $('#clipbar').addEventListener('click', (e) => { if (e.target.closest('[data-clipdone]')) endClip(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && clip && !dlg.open) endClip(); });
   $('#colheads').addEventListener('click', (e) => {
     const b = e.target.closest('[data-copy]');
     if (b) copyLastWeek(b.dataset.copy);
