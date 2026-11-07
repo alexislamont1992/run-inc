@@ -252,3 +252,40 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
   .card .cdist { font-size: 14px; }
   .cells, .colheads, .totals { gap: 10px; }
 }
+
+/* Calculated value in a distance / time / pace trio */
+.field input.is-calc { background: transparent; border-style: dashed; color: var(--accent); font-weight: 600; }
+
+/* Long / Tempo blocks */
+.seg-label {
+  flex: 1; min-width: 0; margin-right: 8px; height: 34px; padding: 0 8px; font-weight: 700; font-size: 16px;
+  border: 1px solid transparent; border-radius: 8px; background: transparent;
+}
+.seg-label:focus { border-color: var(--line); background: var(--surface); outline: none; }
+.seg-actual { align-items: center; }
+.seg-actual .field { margin-bottom: 0; }
+.seg-actual-pace { font-size: 13px; color: var(--muted); padding-top: 16px; }
+.seg-actual-pace b { color: var(--text); }
+.seg-actual-pace b.fast { color: var(--ok); }
+.seg-actual-pace b.slow { color: var(--bad); }
+.seg-use { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Copy a single workout */
+.copybox { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.copybox summary { font-weight: 700; cursor: pointer; }
+.copybox[open] summary { margin-bottom: 8px; }
+.chips-label { font-size: 12px; color: var(--muted); font-weight: 600; margin: 8px 0 4px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips.days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.chip { position: relative; }
+.chip input { position: absolute; opacity: 0; pointer-events: none; }
+.chip span {
+  display: block; text-align: center; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
+  font-size: 13px; font-weight: 600; background: var(--surface-2); line-height: 1.15;
+}
+.chips.days .chip span { padding: 5px 0; font-size: 12px; }
+.chip span small { display: block; font-size: 11px; font-weight: 500; color: var(--muted); }
+.chip input:checked + span { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.chip input:checked + span small { color: var(--accent-ink); }
+.chip input:focus-visible + span { outline: 2px solid var(--accent); }
+.copybox .btn { margin-top: 10px; }

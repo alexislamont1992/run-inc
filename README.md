@@ -30,7 +30,9 @@ Files: `index.html`, `styles.css`, `app.js`, `config.js` (Supabase URL/key, race
 - Tap **+** in a runner's column to add a run, and tap a card to edit it (status, actuals, interval splits, notes).
 - Use **‹ / ›**, **Today**, the date label (opens a date picker) or a horizontal swipe to change week.
 - **⧉ Copy last wk** copies that runner's previous week into the current week as *planned*.
-- Pace, km/h and mph are calculated from distance and time. Durations accept `45` (minutes), `45:30` or `1:05:00`.
+- Fill in any two of **distance, time and pace/speed** and the app calculates the third (shown in orange). Durations accept `45` (minutes), `45:30` or `1:05:00`.
+- **Intervals** get rep blocks with a split time per rep. **Long** and **Tempo** runs get simple blocks (e.g. warm-up / tempo / cool-down), each with distance, target pace or time, and an actual time. *Use as planned/actual total* copies the block totals into the run.
+- **⧉ Copy this workout** (at the bottom of the editor) copies one run to any days this week or next week, for any of the three runners.
 - If `config.js` is empty, the app runs in **Demo mode** and stores data only in that browser.
 
 ## Notes

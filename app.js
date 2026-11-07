@@ -85,9 +85,14 @@
     return null;
   }
   const intervalsSummary = (blocks) => (blocks || [])
-    .filter((b) => b.reps && b.distance_m)
+    .filter((b) => b.kind !== 'segment' && b.reps && b.distance_m)
     .map((b) => `${b.reps}×${b.distance_m >= 1000 && b.distance_m % 1000 === 0 ? b.distance_m / 1000 + 'k' : b.distance_m}`)
     .join(' + ');
+
+  const segmentsSummary = (blocks) => (blocks || [])
+    .filter((b) => b.kind === 'segment' && b.distance_km)
+    .map((b) => fmtKm(b.distance_km))
+    .join('+');
 
   // ---------- Data store (Supabase, or localStorage demo mode) ----------
   const runs = new Map();
@@ -249,7 +254,7 @@
       dist = pk !== null ? `${fmtKm(pk)} km` : ps ? fmtDuration(ps) : '';
       meta = pk !== null && ps ? fmtDuration(ps) : '';
     }
-    const iv = (r.type === 'Intervals' || r.actual_type === 'Intervals') ? intervalsSummary(r.intervals) : '';
+    const iv = intervalsSummary(r.intervals) || segmentsSummary(r.intervals);
     if (iv) meta = meta ? `${iv} · ${meta}` : iv;
     const showType = r.status === 'swapped' ? (r.actual_type || r.type) : r.type;
     return `<button class="card ${typeClass(showType)} s-${r.status}" data-id="${esc(r.id)}">
@@ -321,10 +326,86 @@
   const typeOptions = (sel, withBlank = false) =>
     (withBlank ? '<option value="">Same as planned</option>' : '') +
     TYPES.map((t) => `<option ${t === sel ? 'selected' : ''}>${t}</option>`).join('');
+  const numIn = (v) => num(String(v ?? '').trim().replace(',', '.'));
+  const fmtKm2 = (km) => (km === null || km === undefined ? '' : (Math.round(km * 100) / 100).toString());
+  const SEGMENT_TYPES = ['Long', 'Tempo'];
+  const SEGMENT_LABELS = ['Warm-up', 'Easy', 'Steady', 'Marathon pace', 'Half-marathon pace', 'Tempo', 'Fast finish', 'Cool-down'];
+  const newInterval = () => ({ reps: 6, distance_m: 800, target_pace_s: 220, recovery_s: 90, recovery_kind: 'jog', splits: [] });
+  const newSegment = (label = '') => ({ kind: 'segment', label, distance_km: null, target_pace_s: null, actual_s: null });
+  const defaultSegments = (type) => (type === 'Tempo'
+    ? [newSegment('Warm-up'), newSegment('Tempo'), newSegment('Cool-down')]
+    : [newSegment('Easy'), newSegment('Fast finish')]);
+
+  // Which block editor applies: intervals (reps + recovery) or segments (Long / Tempo)
+  function blockMode() {
+    const types = [draft.type];
+    if (draft.status === 'swapped' && draft.actual_type) types.push(draft.actual_type);
+    if (types.includes('Intervals')) return 'intervals';
+    if (types.some((t) => SEGMENT_TYPES.includes(t))) return 'segments';
+    return null;
+  }
+
+  // ----- Distance / time / pace triads: fill any two, the third is calculated -----
+  // A triad is an element with data-triad holding inputs with data-role dist | time | pace (| speed).
+  // data-order remembers the two most recently typed roles; the remaining one is computed.
+  function triadCompute(g) {
+    const get = (r) => $(`[data-role="${r}"]`, g);
+    $$('[data-role]', g).forEach((el) => el.classList.remove('is-calc'));
+    const order = (g.dataset.order || '').split(',').filter(Boolean);
+    if (order.length < 2) return;
+    const target = ['dist', 'time', 'pace'].find((r) => !order.includes(r));
+    const km = numIn(get('dist').value), sec = parseDuration(get('time').value), pace = parseDuration(get('pace').value);
+    let out = '';
+    if (target === 'dist' && sec && pace) out = fmtKm2(sec / pace);
+    if (target === 'time' && km && pace) out = fmtDuration(km * pace);
+    if (target === 'pace' && km && sec) out = fmtDuration(sec / km);
+    get(target).value = out;
+    if (out) get(target).classList.add('is-calc');
+    const speed = get('speed');
+    if (speed && target === 'pace') {
+      speed.value = out ? (km / (sec / 3600)).toFixed(1) : '';
+      if (out) speed.classList.add('is-calc');
+    }
+  }
+  function triadInput(input) {
+    const g = input.closest('[data-triad]');
+    if (!g || !input.dataset.role) return;
+    const get = (r) => $(`[data-role="${r}"]`, g);
+    let role = input.dataset.role;
+    if (role === 'speed') {
+      const v = numIn(input.value);
+      get('pace').value = v > 0 ? fmtDuration(3600 / v) : '';
+      role = 'pace';
+    } else if (role === 'pace' && get('speed')) {
+      const p = parseDuration(input.value);
+      get('speed').value = p ? (3600 / p).toFixed(1) : '';
+    }
+    let order = (g.dataset.order || '').split(',').filter((r) => r && r !== role);
+    if (get(role).value.trim()) order.unshift(role);
+    order = order.filter((r) => get(r).value.trim()).slice(0, 2);
+    g.dataset.order = order.join(',');
+    triadCompute(g);
+  }
+  function triadInit(g) {
+    const filled = ['dist', 'time', 'pace'].filter((r) => $(`[data-role="${r}"]`, g).value.trim());
+    g.dataset.order = filled.slice(0, 2).join(',');
+    triadCompute(g);
+  }
+  const triadFields = (prefix, km, sec, opts = {}) => `
+    <div class="row">
+      <label class="field"><span>Distance (km)</span><input name="${prefix}_distance_km" data-role="dist" inputmode="decimal" placeholder="${opts.distPh || 'km'}" value="${esc(fmtKm2(km))}"></label>
+      <label class="field"><span>${opts.timeLabel || 'Time'}</span><input name="${prefix}_duration" data-role="time" inputmode="numeric" placeholder="${opts.timePh || 'mm:ss or h:mm:ss'}" value="${esc(fmtDuration(sec))}"></label>
+    </div>
+    <div class="row">
+      <label class="field"><span>Pace (min/km)</span><input name="${prefix}_pace" data-role="pace" inputmode="numeric" placeholder="m:ss"></label>
+      <label class="field"><span>Speed (km/h)</span><input name="${prefix}_speed" data-role="speed" inputmode="decimal" placeholder="km/h"></label>
+    </div>`;
 
   function openEditor(run) {
     draft = JSON.parse(JSON.stringify(run));
-    if (!Array.isArray(draft.intervals)) draft.intervals = [];
+    const blocks = Array.isArray(draft.intervals) ? draft.intervals : [];
+    draft._iv = blocks.filter((b) => b.kind !== 'segment');
+    draft._seg = blocks.filter((b) => b.kind === 'segment');
     const isNew = !runs.has(draft.id);
     const d = parseISO(draft.run_date);
 
@@ -341,14 +422,12 @@
               <label class="field"><span>Type</span><select name="type">${typeOptions(draft.type)}</select></label>
               <label class="field"><span>Date</span><input type="date" name="run_date" value="${esc(draft.run_date)}"></label>
             </div>
-            <div class="row">
-              <label class="field"><span>Distance (km)</span><input name="planned_distance_km" inputmode="decimal" placeholder="e.g. 10" value="${esc(fmtKm(num(draft.planned_distance_km)))}"></label>
-              <label class="field"><span>Duration</span><input name="planned_duration" inputmode="numeric" placeholder="mm:ss or h:mm:ss" value="${esc(fmtDuration(num(draft.planned_duration_s)))}"></label>
-            </div>
+            <div data-triad id="plannedTriad">${triadFields('planned', num(draft.planned_distance_km), num(draft.planned_duration_s), { distPh: 'e.g. 10', timeLabel: 'Duration' })}</div>
+            <p class="hint">Fill in any two of distance, time and pace/speed and the third is calculated.</p>
             <div class="calc" id="plannedCalc"></div>
           </div>
 
-          <div class="fsec" id="ivSec"></div>
+          <div class="fsec" id="blockSec"></div>
 
           <div class="fsec">
             <h3>Status</h3>
@@ -360,10 +439,7 @@
           <div class="fsec" id="actualSec">
             <h3>What you actually did</h3>
             <div id="actualTypeWrap"><label class="field"><span>Actual type</span><select name="actual_type">${typeOptions(draft.actual_type, true)}</select></label></div>
-            <div class="row">
-              <label class="field"><span>Distance (km)</span><input name="actual_distance_km" inputmode="decimal" placeholder="km" value="${esc(fmtKm(num(draft.actual_distance_km)))}"></label>
-              <label class="field"><span>Time</span><input name="actual_duration" inputmode="numeric" placeholder="mm:ss or h:mm:ss" value="${esc(fmtDuration(num(draft.actual_duration_s)))}"></label>
-            </div>
+            <div data-triad id="actualTriad">${triadFields('actual', num(draft.actual_distance_km), num(draft.actual_duration_s))}</div>
             <p class="hint" id="actualHint"></p>
             <div class="calc" id="actualCalc"></div>
           </div>
@@ -374,6 +450,8 @@
             <h3>Notes</h3>
             <label class="field"><textarea name="notes" rows="3" placeholder="How did it feel? Route, weather, shoes…">${esc(draft.notes || '')}</textarea></label>
           </div>
+
+          <details class="fsec copybox" id="copySec"></details>
         </div>
         <div class="ed-foot">
           ${isNew ? '' : '<button type="button" class="btn danger" data-act="delete">Delete</button>'}
@@ -383,7 +461,11 @@
         </div>
       </form>`;
 
-    renderIntervals();
+    triadInit($('#plannedTriad', dlg));
+    triadInit($('#actualTriad', dlg));
+    readForm();
+    renderBlocks();
+    renderCopy();
     updateEditor();
     dlg.showModal();
     $('.ed-body', dlg).scrollTop = 0;
@@ -394,34 +476,47 @@
     const f = $('form', dlg);
     draft.type = f.type.value;
     draft.run_date = f.run_date.value || draft.run_date;
-    draft.planned_distance_km = num(String(f.planned_distance_km.value).replace(',', '.'));
+    draft.planned_distance_km = numIn(f.planned_distance_km.value);
     draft.planned_duration_s = parseDuration(f.planned_duration.value);
     draft.status = (f.querySelector('input[name=status]:checked') || {}).value || 'planned';
     draft.actual_type = f.actual_type.value || null;
-    draft.actual_distance_km = num(String(f.actual_distance_km.value).replace(',', '.'));
+    draft.actual_distance_km = numIn(f.actual_distance_km.value);
     draft.actual_duration_s = parseDuration(f.actual_duration.value);
     draft.notes = f.notes.value.trim() || null;
-    $$('.block', dlg).forEach((el, i) => {
-      const b = draft.intervals[i];
+    $$('.block', dlg).forEach((el) => {
+      const i = +el.dataset.i;
+      if (el.dataset.kind === 'segment') {
+        const b = draft._seg[i];
+        b.label = $('[name=seg_label]', el).value.trim();
+        b.distance_km = numIn($('[name=seg_dist]', el).value);
+        b.target_pace_s = parseDuration($('[name=seg_pace]', el).value);
+        b.actual_s = parseDuration($('[name=seg_actual]', el).value);
+        return;
+      }
+      const b = draft._iv[i];
       b.reps = Math.max(0, Math.min(50, parseInt($('[name=reps]', el).value, 10) || 0));
       b.distance_m = num($('[name=distance_m]', el).value);
       b.target_pace_s = parseDuration($('[name=target_pace]', el).value);
       b.recovery_s = parseDuration($('[name=recovery]', el).value, 's');
       b.recovery_kind = $('[name=recovery_kind]', el).value;
-      const splitInputs = $$('[name=split]', el);
-      b.splits = splitInputs.map((inp) => parseDuration(inp.value, 's'));
+      b.splits = $$('[name=split]', el).map((inp) => parseDuration(inp.value, 's'));
     });
   }
 
-  function renderIntervals() {
-    const sec = $('#ivSec', dlg);
-    const f = $('form', dlg);
-    const show = f.type.value === 'Intervals' || f.actual_type.value === 'Intervals';
-    sec.hidden = !show;
-    if (!show) return;
-    if (!draft.intervals.length) draft.intervals.push({ reps: 6, distance_m: 800, target_pace_s: 220, recovery_s: 90, recovery_kind: 'jog', splits: [] });
+  function renderBlocks() {
+    const sec = $('#blockSec', dlg);
+    const mode = blockMode();
+    sec.hidden = !mode;
+    sec.dataset.mode = mode || '';
+    if (mode === 'intervals') renderIntervals(sec);
+    else if (mode === 'segments') renderSegments(sec);
+    else sec.innerHTML = '';
+  }
+
+  function renderIntervals(sec) {
+    if (!draft._iv.length) draft._iv.push(newInterval());
     sec.innerHTML = `<h3>Interval blocks</h3>
-      ${draft.intervals.map((b, i) => `
+      ${draft._iv.map((b, i) => `
         <div class="block" data-i="${i}">
           <div class="block-head"><span>Block ${i + 1}</span><button type="button" class="btn small danger" data-act="rmblock" data-i="${i}">Remove</button></div>
           <div class="row3">
@@ -439,7 +534,7 @@
           <div class="splits">
             ${Array.from({ length: b.reps || 0 }, (_, r) => `
               <label class="split"><span>Rep ${r + 1}</span>
-                <input name="split" inputmode="numeric" placeholder="${b.target_pace_s && b.distance_m ? fmtDuration(b.target_pace_s * b.distance_m / 1000) : 'm:ss'}" value="${esc(fmtDuration(b.splits?.[r]))}">
+                <input name="split" inputmode="numeric" placeholder="m:ss" value="${esc(fmtDuration(b.splits?.[r]))}">
                 <small data-splitpace></small></label>`).join('')}
           </div>
         </div>`).join('')}
@@ -447,32 +542,130 @@
       <p class="hint" style="margin-top:8px">Split = time for each rep (m:ss, or plain seconds).</p>`;
   }
 
+  function renderSegments(sec) {
+    if (!draft._seg.length) draft._seg.push(...defaultSegments(draft.type));
+    sec.innerHTML = `<h3>Blocks</h3>
+      <datalist id="segLabels">${SEGMENT_LABELS.map((l) => `<option value="${esc(l)}">`).join('')}</datalist>
+      ${draft._seg.map((b, i) => `
+        <div class="block" data-i="${i}" data-kind="segment">
+          <div class="block-head">
+            <input class="seg-label" name="seg_label" list="segLabels" placeholder="Block ${i + 1}" value="${esc(b.label || '')}" aria-label="Block name">
+            <button type="button" class="btn small danger" data-act="rmblock" data-i="${i}">Remove</button>
+          </div>
+          <div class="row3" data-triad>
+            <label class="field"><span>Distance (km)</span><input name="seg_dist" data-role="dist" inputmode="decimal" placeholder="km" value="${esc(fmtKm2(b.distance_km))}"></label>
+            <label class="field"><span>Target pace</span><input name="seg_pace" data-role="pace" inputmode="numeric" placeholder="m:ss /km" value="${esc(fmtDuration(b.target_pace_s))}"></label>
+            <label class="field"><span>Target time</span><input name="seg_time" data-role="time" inputmode="numeric" placeholder="m:ss"></label>
+          </div>
+          <div class="row seg-actual">
+            <label class="field"><span>Actual time</span><input name="seg_actual" inputmode="numeric" placeholder="m:ss" value="${esc(fmtDuration(b.actual_s))}"></label>
+            <div class="seg-actual-pace" data-segpace></div>
+          </div>
+        </div>`).join('')}
+      <button type="button" class="btn small" data-act="addblock">+ Add block</button>
+      <div class="calc" id="segTotal" style="margin-top:10px"></div>
+      <div class="seg-use">
+        <button type="button" class="btn small" data-act="seg-plan">Use as planned total</button>
+        <button type="button" class="btn small" data-act="seg-actual">Use as actual total</button>
+      </div>`;
+    $$('[data-triad]', sec).forEach(triadInit);
+  }
+
+  function segmentTotals() {
+    const segs = draft._seg.filter((b) => b.distance_km);
+    const km = segs.reduce((s, b) => s + b.distance_km, 0);
+    const planned = segs.length && segs.every((b) => b.target_pace_s) ? segs.reduce((s, b) => s + b.distance_km * b.target_pace_s, 0) : null;
+    const actual = segs.length && segs.every((b) => b.actual_s) ? segs.reduce((s, b) => s + b.actual_s, 0) : null;
+    return { km, planned, actual };
+  }
+
+  function renderCopy() {
+    const box = $('#copySec', dlg);
+    const open = box.open;
+    const wk = mondayOf(parseISO(draft.run_date));
+    const dayChip = (d) => `<label class="chip"><input type="checkbox" name="copy_day" value="${iso(d)}"><span>${d.toLocaleDateString('en-GB', { weekday: 'short' })}<small>${d.getDate()}</small></span></label>`;
+    const days = (start) => Array.from({ length: 7 }, (_, i) => dayChip(addDays(start, i))).join('');
+    box.innerHTML = `<summary>⧉ Copy this workout to other days…</summary>
+      <div class="chips-label">For</div>
+      <div class="chips">${RUNNERS.map((r) => `<label class="chip"><input type="checkbox" name="copy_runner" value="${esc(r)}" ${r === draft.runner ? 'checked' : ''}><span>${esc(r)}</span></label>`).join('')}</div>
+      <div class="chips-label">This week</div><div class="chips days">${days(wk)}</div>
+      <div class="chips-label">Next week</div><div class="chips days">${days(addDays(wk, 7))}</div>
+      <button type="button" class="btn small primary" data-act="copyrun">Copy</button>
+      <p class="hint" style="margin-top:8px">Copies the plan as it is in this form (type, distance, time, blocks, notes) as “planned”.</p>`;
+    box.open = open;
+  }
+
+  // Strip what was actually done from a block, keeping only the plan
+  const planOnlyBlock = (b) => (b.kind === 'segment' ? { ...b, actual_s: null } : { ...b, splits: [] });
+
+  function blocksForSave(mode) {
+    if (mode === 'intervals') {
+      return draft._iv.filter((b) => b.reps && b.distance_m).map((b) => ({ ...b, splits: (b.splits || []).slice(0, b.reps) }));
+    }
+    if (mode === 'segments') {
+      return draft._seg.filter((b) => b.distance_km || b.target_pace_s || b.actual_s)
+        .map((b) => ({ kind: 'segment', label: b.label || '', distance_km: b.distance_km, target_pace_s: b.target_pace_s, actual_s: b.actual_s ?? null }));
+    }
+    return [];
+  }
+
+  async function copyWorkout() {
+    readForm();
+    const runnersSel = $$('[name=copy_runner]:checked', dlg).map((el) => el.value);
+    const daysSel = $$('[name=copy_day]:checked', dlg).map((el) => el.value);
+    if (!runnersSel.length || !daysSel.length) { toast('Pick at least one runner and one day'); return; }
+    // Copies are plain planned runs, so keep the blocks that match the planned type
+    const planMode = draft.type === 'Intervals' ? 'intervals' : SEGMENT_TYPES.includes(draft.type) ? 'segments' : null;
+    const blocks = blocksForSave(planMode).map(planOnlyBlock);
+    const rows = [];
+    for (const runner of runnersSel) {
+      for (const run_date of daysSel) {
+        rows.push({
+          id: uuid(), runner, run_date, type: draft.type, status: 'planned',
+          planned_distance_km: draft.planned_distance_km, planned_duration_s: draft.planned_duration_s,
+          notes: draft.notes, intervals: blocks,
+        });
+      }
+    }
+    try {
+      await Store.insertMany(rows);
+      $$('[name=copy_day]', dlg).forEach((el) => { el.checked = false; });
+      render();
+      toast(`Copied to ${rows.length} day${rows.length === 1 ? '' : 's'}`);
+    } catch (err) { toast('Could not copy: ' + err.message); }
+  }
+
   function updateEditor() {
     readForm();
     const st = draft.status;
-    $('#plannedCalc', dlg).innerHTML = speedLine(draft.planned_distance_km, draft.planned_duration_s);
+    const mphLine = (km, sec) => { const v = kmh(km, sec); return v ? `${fmtPace(paceOf(km, sec))} · ${fmtSpeed(v)} km/h · <b>${fmtSpeed(v / KM_PER_MILE)} mph</b>` : ''; };
+    $('#plannedCalc', dlg).innerHTML = mphLine(draft.planned_distance_km, draft.planned_duration_s);
 
     // Actual section only for done / swapped
-    const actualSec = $('#actualSec', dlg);
-    actualSec.hidden = !(st === 'done' || st === 'swapped');
+    $('#actualSec', dlg).hidden = !(st === 'done' || st === 'swapped');
     $('#actualTypeWrap', dlg).hidden = st !== 'swapped';
     $('#actualHint', dlg).textContent = st === 'done'
       ? 'Leave blank to use the planned distance/time.'
       : 'Record what you did instead of the plan.';
     const a = actualOf(draft);
-    $('#actualCalc', dlg).innerHTML = a ? speedLine(a.km, a.sec) : '';
+    $('#actualCalc', dlg).innerHTML = a ? mphLine(a.km, a.sec) : '';
     const f = $('form', dlg);
-    f.actual_distance_km.placeholder = st === 'done' && draft.planned_distance_km !== null ? fmtKm(draft.planned_distance_km) : 'km';
+    f.actual_distance_km.placeholder = st === 'done' && draft.planned_distance_km !== null ? fmtKm2(draft.planned_distance_km) : 'km';
     f.actual_duration.placeholder = st === 'done' && draft.planned_duration_s ? fmtDuration(draft.planned_duration_s) : 'mm:ss or h:mm:ss';
 
-    // Interval per-block summary and split paces
-    $$('.block', dlg).forEach((el, i) => {
-      const b = draft.intervals[i];
+    const mode = $('#blockSec', dlg).dataset.mode;
+    if (mode === 'intervals') updateIntervalCalcs();
+    if (mode === 'segments') updateSegmentCalcs();
+    renderCompare();
+  }
+
+  function updateIntervalCalcs() {
+    $$('.block', dlg).forEach((el) => {
+      const b = draft._iv[+el.dataset.i];
       const work = (b.reps || 0) * (b.distance_m || 0);
       const done = (b.splits || []).filter((s) => s);
       const avg = done.length ? done.reduce((x, y) => x + y, 0) / done.length : null;
-      const sum = $('[data-blocksum]', el);
-      sum.innerHTML = work ? `${b.reps} × ${b.distance_m} m${b.target_pace_s ? ` @ ${fmtPace(b.target_pace_s)}` : ''}${b.recovery_s ? `, ${fmtDuration(b.recovery_s)} ${b.recovery_kind}` : ''} · work ${fmtKm(work / 1000)} km` +
+      $('[data-blocksum]', el).innerHTML = work ? `${b.reps} × ${b.distance_m} m${b.target_pace_s ? ` @ ${fmtPace(b.target_pace_s)}` : ''}${b.recovery_s ? `, ${fmtDuration(b.recovery_s)} ${b.recovery_kind}` : ''} · work ${fmtKm(work / 1000)} km` +
         (avg && b.distance_m ? `<br>Avg rep <b>${fmtDuration(avg)}</b> → <b>${fmtPace(avg / (b.distance_m / 1000))}</b>` : '') : '';
       const targetRep = b.target_pace_s && b.distance_m ? fmtDuration(b.target_pace_s * b.distance_m / 1000) : 'm:ss';
       $$('[name=split]', el).forEach((inp) => { inp.placeholder = targetRep; });
@@ -485,8 +678,38 @@
         if (b.target_pace_s) small.className = p <= b.target_pace_s + 1 ? 'fast' : 'slow';
       });
     });
+  }
 
-    renderCompare();
+  function updateSegmentCalcs() {
+    $$('.block', dlg).forEach((el) => {
+      const b = draft._seg[+el.dataset.i];
+      const out = $('[data-segpace]', el);
+      $('[name=seg_actual]', el).placeholder = b.distance_km && b.target_pace_s ? fmtDuration(b.distance_km * b.target_pace_s) : 'm:ss';
+      if (!b.actual_s || !b.distance_km) { out.innerHTML = ''; return; }
+      const p = b.actual_s / b.distance_km;
+      const cls = b.target_pace_s ? (p <= b.target_pace_s + 1 ? 'fast' : 'slow') : '';
+      out.innerHTML = `<b class="${cls}">${fmtPace(p)}</b><br>${fmtSpeed(kmh(b.distance_km, b.actual_s))} km/h`;
+    });
+    const t = segmentTotals();
+    $('#segTotal', dlg).innerHTML = t.km
+      ? `Total <b>${fmtKm2(t.km)} km</b>${t.planned ? ` · planned <b>${fmtDuration(t.planned)}</b> (${fmtPace(t.planned / t.km)})` : ''}${t.actual ? ` · actual <b>${fmtDuration(t.actual)}</b> (${fmtPace(t.actual / t.km)})` : ''}`
+      : '';
+    $('[data-act="seg-actual"]', dlg).hidden = !(draft.status === 'done' || draft.status === 'swapped');
+  }
+
+  // Put block totals into the planned or actual distance/time fields
+  function useSegmentTotals(which) {
+    readForm();
+    const t = segmentTotals();
+    const sec = which === 'plan' ? t.planned : t.actual;
+    if (!t.km) { toast('Add distances to the blocks first'); return; }
+    const g = $(which === 'plan' ? '#plannedTriad' : '#actualTriad', dlg);
+    $('[data-role="dist"]', g).value = fmtKm2(t.km);
+    $('[data-role="time"]', g).value = sec ? fmtDuration(sec) : '';
+    $('[data-role="pace"]', g).value = '';
+    triadInit(g);
+    if (!sec) toast(which === 'plan' ? 'Distance set; add a target pace to every block for the time' : 'Distance set; add an actual time to every block for the time');
+    updateEditor();
   }
 
   function renderCompare() {
@@ -501,7 +724,7 @@
     const cmp = (x, y, higherIsBetter) => (x === null || y === null || x === undefined || y === undefined || Math.abs(x - y) < 1e-9 ? null : higherIsBetter ? y > x : y < x);
     const rows = [
       ['Type', esc(draft.type), a ? esc(a.type) : 'Missed', ''],
-      ['Distance', pk !== null ? `${fmtKm(pk)} km` : '–', ak !== null ? `${fmtKm(ak)} km` : '–', cls(cmp(pk, ak, true))],
+      ['Distance', pk !== null ? `${fmtKm2(pk)} km` : '–', ak !== null ? `${fmtKm2(ak)} km` : '–', cls(cmp(pk, ak, true))],
       ['Time', ps ? fmtDuration(ps) : '–', as ? fmtDuration(as) : '–', ''],
       ['Pace', fmtPace(pp), fmtPace(ap), cls(cmp(pp, ap, false))],
       ['km/h', fmtSpeed(pv), fmtSpeed(av), cls(cmp(pv, av, true))],
@@ -514,13 +737,17 @@
   }
 
   dlg.addEventListener('input', (e) => {
-    if (e.target.name === 'reps') { readForm(); renderIntervals(); restoreFocus(e.target); }
+    triadInput(e.target);
+    if (e.target.name === 'reps') { readForm(); renderBlocks(); restoreFocus(e.target); }
     updateEditor();
   });
   dlg.addEventListener('change', (e) => {
-    if (e.target.name === 'type' || e.target.name === 'actual_type') {
-      readForm(); renderIntervals();
+    const n = e.target.name;
+    if (n === 'type' || n === 'actual_type' || n === 'status') {
+      readForm();
+      if ((blockMode() || '') !== $('#blockSec', dlg).dataset.mode) renderBlocks();
     }
+    if (n === 'run_date') { readForm(); renderCopy(); }
     updateEditor();
   });
   function restoreFocus(oldEl) {
@@ -533,18 +760,24 @@
     const btn = e.target.closest('[data-act]');
     if (!btn) return;
     const act = btn.dataset.act;
+    const mode = $('#blockSec', dlg).dataset.mode;
     if (act === 'close') { dlg.close(); return; }
     if (act === 'addblock') {
       readForm();
-      draft.intervals.push({ reps: 4, distance_m: 400, target_pace_s: null, recovery_s: 60, recovery_kind: 'jog', splits: [] });
-      renderIntervals(); updateEditor(); return;
+      if (mode === 'segments') draft._seg.push(newSegment());
+      else draft._iv.push({ reps: 4, distance_m: 400, target_pace_s: null, recovery_s: 60, recovery_kind: 'jog', splits: [] });
+      renderBlocks(); updateEditor(); return;
     }
     if (act === 'rmblock') {
       readForm();
-      draft.intervals.splice(+btn.dataset.i, 1);
-      if (!draft.intervals.length) draft.intervals.push({ reps: 0, distance_m: null, target_pace_s: null, recovery_s: null, recovery_kind: 'jog', splits: [] });
-      renderIntervals(); updateEditor(); return;
+      const list = mode === 'segments' ? draft._seg : draft._iv;
+      list.splice(+btn.dataset.i, 1);
+      if (!list.length) list.push(mode === 'segments' ? newSegment() : { reps: 0, distance_m: null, target_pace_s: null, recovery_s: null, recovery_kind: 'jog', splits: [] });
+      renderBlocks(); updateEditor(); return;
     }
+    if (act === 'seg-plan') { useSegmentTotals('plan'); return; }
+    if (act === 'seg-actual') { useSegmentTotals('actual'); return; }
+    if (act === 'copyrun') { btn.disabled = true; await copyWorkout(); btn.disabled = false; return; }
     if (act === 'delete') {
       if (!confirm('Delete this run?')) return;
       try { await Store.remove(draft.id); dlg.close(); render(); toast('Run deleted'); } catch (err) { toast('Could not delete: ' + err.message); }
@@ -558,8 +791,7 @@
         out.actual_type = null; out.actual_distance_km = null; out.actual_duration_s = null;
       }
       if (out.status === 'done') out.actual_type = null;
-      const ivType = out.type === 'Intervals' || out.actual_type === 'Intervals';
-      out.intervals = ivType ? out.intervals.filter((b) => b.reps && b.distance_m).map((b) => ({ ...b, splits: (b.splits || []).slice(0, b.reps) })) : [];
+      out.intervals = blocksForSave(blockMode());
       btn.disabled = true;
       try {
         await Store.save(out);
@@ -592,7 +824,7 @@
       planned_duration_s: r.planned_duration_s,
       notes: r.notes,
       status: 'planned',
-      intervals: (r.intervals || []).map((b) => ({ ...b, splits: [] })),
+      intervals: (r.intervals || []).map(planOnlyBlock),
     }));
     try { await Store.insertMany(rows); render(); toast(`Copied ${rows.length} run(s) for ${runner}`); } catch (err) { toast('Could not copy: ' + err.message); }
   }
