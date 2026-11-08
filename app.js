@@ -510,7 +510,6 @@
             <label class="field"><textarea name="notes" rows="3" placeholder="How did it feel? Route, weather, shoes…">${esc(draft.notes || '')}</textarea></label>
           </div>
 
-          <div class="fsec"><button type="button" class="btn copy-open" data-act="copyrun">⧉ Copy to other runners or days…</button></div>
         </div>
         <div class="ed-foot">
           ${isNew ? '' : '<button type="button" class="btn danger" data-act="delete">Delete</button>'}
@@ -878,13 +877,6 @@
       renderBlocks(); updateEditor(); return;
     }
     if (act === 'seg-actual') { useSegmentActuals(); return; }
-    if (act === 'copyrun') {
-      readForm();
-      // Copies are plain planned runs, so keep the blocks that match the planned type
-      const planMode = draft.type === 'Intervals' ? 'intervals' : SEGMENT_TYPES.includes(draft.type) ? 'segments' : null;
-      openCopier({ ...draft, intervals: blocksForSave(planMode) });
-      return;
-    }
     if (act === 'delete') {
       if (!confirm('Delete this run?')) return;
       try { await Store.remove(draft.id); dlg.close(); render(); toast('Run deleted'); } catch (err) { toast('Could not delete: ' + err.message); }
@@ -962,7 +954,6 @@
     bar.innerHTML = `<span class="card-dot ${typeClass(clip.type)}"></span>
       <span class="cliptext"><b>Copying ${esc(clip.type)}${km !== null ? ` · ${fmtKm(km)} km` : ''}</b>
       <small>Tap any “Paste” to add it · from ${esc(clip.runner)}, ${fmtDay(parseISO(clip.run_date))}</small></span>
-      <button class="clipdone" data-clipdays>Pick days…</button>
       <button class="clipdone" data-clipdone>Done</button>`;
   }
   // A fresh planned run with src's plan (type, distance, time, matching blocks, notes)
@@ -979,98 +970,6 @@
   async function pasteClip(runner, run_date) {
     try { await Store.insertMany([planCopy(clip, runner, run_date)]); render(); toast(`Pasted to ${runner} · ${fmtDay(parseISO(run_date))}`); } catch (err) { toast('Could not paste: ' + err.message); }
   }
-
-  // ---------- Copy picker: any runners × any days in the next 6 weeks ----------
-  const COPY_WEEKS = 6;
-  const copier = $('#copier');
-  let copySrc = null;
-  function openCopier(src) {
-    copySrc = JSON.parse(JSON.stringify(src));
-    const t = today(), tIso = iso(t), srcDate = parseISO(copySrc.run_date);
-    const start = mondayOf(srcDate > t ? srcDate : t);
-    const km = num(copySrc.planned_distance_km), sec = num(copySrc.planned_duration_s);
-    const what = km !== null ? ` · ${fmtKm(km)} km` : sec ? ` · ${fmtDuration(sec)}` : '';
-    let rows = '';
-    for (let w = 0; w < COPY_WEEKS; w++) {
-      const mon = addDays(start, 7 * w);
-      rows += `<span class="cal-wk">${mon.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>`;
-      for (let i = 0; i < 7; i++) {
-        const d = addDays(mon, i), ds = iso(d);
-        const cls = (ds === copySrc.run_date ? ' is-src' : '') + (ds === tIso ? ' is-today' : '');
-        rows += `<label class="chip cday${cls}"><input type="checkbox" name="cday" value="${ds}" data-wd="${i}" ${ds < tIso ? 'disabled' : ''}>
-          <span>${d.getDate()}<i class="dots" data-dots="${ds}"></i></span></label>`;
-      }
-    }
-    copier.innerHTML = `
-      <form method="dialog" novalidate>
-        <div class="ed-head">
-          <h2>Copy ${esc(copySrc.type)}${what}<small>from ${esc(copySrc.runner)} · ${fmtDay(srcDate)}</small></h2>
-          <button type="button" class="icon-btn" data-cact="close" aria-label="Close">✕</button>
-        </div>
-        <div class="ed-body">
-          <div class="chips-label">To</div>
-          <div class="chips">${RUNNERS.map((r, i) => `<label class="chip r${i}"><input type="checkbox" name="crunner" value="${esc(r)}" ${r === copySrc.runner ? 'checked' : ''}><span>${esc(r)}</span></label>`).join('')}</div>
-          <div class="chips-label">Days <small>· tap a weekday to pick it in every week</small></div>
-          <div class="cal">
-            <span></span>
-            ${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((n, i) => `<button type="button" class="cal-wd" data-cact="weekday" data-wd="${i}">${n}</button>`).join('')}
-            ${rows}
-          </div>
-          <p class="hint" style="margin-top:10px">Dots = runs already planned that day. Copies are added as “planned”, keeping the type, distance, time, blocks and notes.</p>
-        </div>
-        <div class="ed-foot">
-          <span class="copy-count" id="copyCount"></span>
-          <span class="spacer"></span>
-          <button type="button" class="btn" data-cact="close">Cancel</button>
-          <button type="submit" class="btn primary" data-cact="copy">Copy</button>
-        </div>
-      </form>`;
-    updateCopier();
-    copier.showModal();
-  }
-  function updateCopier() {
-    const who = $$('[name=crunner]:checked', copier).map((el) => el.value);
-    const days = $$('[name=cday]:checked', copier);
-    $$('[data-dots]', copier).forEach((el) => {
-      const d = parseISO(el.dataset.dots);
-      el.innerHTML = RUNNERS.map((r, i) => (who.includes(r) && runsFor(r, d, d).length ? `<b class="r${i}"></b>` : '')).join('');
-    });
-    const n = who.length * days.length;
-    $('#copyCount', copier).textContent = n ? `${n} run${n === 1 ? '' : 's'}` : 'Pick runners and days';
-    $('[data-cact="copy"]', copier).disabled = !n;
-  }
-  copier.addEventListener('change', updateCopier);
-  copier.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-cact]');
-    if (!btn) return;
-    const act = btn.dataset.cact;
-    if (act === 'close') { copier.close(); return; }
-    if (act === 'weekday') {
-      const boxes = $$(`[name=cday][data-wd="${btn.dataset.wd}"]:not(:disabled)`, copier);
-      const on = !boxes.every((el) => el.checked);
-      boxes.forEach((el) => { el.checked = on; });
-      updateCopier();
-      return;
-    }
-    if (act === 'copy') {
-      e.preventDefault();
-      const who = $$('[name=crunner]:checked', copier).map((el) => el.value);
-      const days = $$('[name=cday]:checked', copier).map((el) => el.value);
-      const rows = who.flatMap((r) => days.map((d) => planCopy(copySrc, r, d)));
-      if (!rows.length) return;
-      btn.disabled = true;
-      try {
-        await Store.insertMany(rows);
-        copier.close();
-        if (clip) endClip(); else render();
-        toast(`Copied ${rows.length} run${rows.length === 1 ? '' : 's'}`);
-      } catch (err) {
-        toast('Could not copy: ' + err.message);
-        btn.disabled = false;
-      }
-    }
-  });
-  copier.addEventListener('close', () => { copySrc = null; });
 
   // ---------- Toast ----------
   let toastTimer;
@@ -1154,11 +1053,8 @@
     picking = true;
     render();
   };
-  $('#clipbar').addEventListener('click', (e) => {
-    if (e.target.closest('[data-clipdone]')) endClip();
-    else if (e.target.closest('[data-clipdays]') && clip) openCopier(clip);
-  });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && (clip || picking) && !dlg.open && !copier.open) endClip(); });
+  $('#clipbar').addEventListener('click', (e) => { if (e.target.closest('[data-clipdone]')) endClip(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && (clip || picking) && !dlg.open) endClip(); });
   $('#colheads').addEventListener('click', (e) => {
     const b = e.target.closest('[data-copy]');
     if (b) copyLastWeek(b.dataset.copy);

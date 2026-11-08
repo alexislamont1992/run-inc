@@ -307,41 +307,6 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .seg-actual-pace b.slow { color: var(--bad); }
 .seg-use { display: flex; flex-wrap: wrap; gap: 8px; }
 
-/* Copy a single workout (copy picker dialog) */
-.copy-open { width: 100%; color: var(--accent); }
-.copier { height: fit-content; margin: auto 0 0; border-radius: 18px 18px 0 0; }
-.copier .ed-head { padding-top: 12px; }
-@media (min-width: 600px) { .copier { margin: auto; border-radius: 18px; } }
-.chips-label small { font-weight: 600; }
-.cal { display: grid; grid-template-columns: 44px repeat(7, minmax(0, 1fr)); gap: 4px; align-items: center; }
-.cal-wk { font-size: 11px; font-weight: 700; color: var(--muted); white-space: nowrap; }
-.cal-wd {
-  border: 0; background: var(--accent-soft); color: var(--accent); border-radius: 8px;
-  height: 28px; padding: 0; font-size: 11.5px; font-weight: 800;
-}
-.chip.cday span { padding: 7px 0 3px; font-size: 13px; border-radius: 10px; }
-.chip.cday.is-today span { color: var(--today-ink); }
-.chip.cday.is-src span { box-shadow: inset 0 0 0 2px var(--accent); }
-.chip.cday input:disabled + span { opacity: .35; }
-.chip.cday input:checked + span { color: var(--accent-ink); }
-.dots { display: flex; justify-content: center; gap: 2px; height: 5px; margin-top: 2px; }
-.dots b { width: 5px; height: 5px; border-radius: 50%; background: var(--rc); box-shadow: 0 0 0 1px var(--surface); }
-.copy-count { align-self: center; font-size: 13px; font-weight: 700; color: var(--muted); }
-.chips-label { font-size: 12px; color: var(--muted); font-weight: 700; margin: 8px 0 4px; }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.chips.days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
-.chip { position: relative; }
-.chip input { position: absolute; opacity: 0; pointer-events: none; }
-.chip span {
-  display: block; text-align: center; padding: 7px 12px; border-radius: 999px;
-  font-size: 13px; font-weight: 700; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); line-height: 1.15;
-}
-.chips.days .chip span { padding: 5px 0; font-size: 12px; border-radius: 10px; }
-.chip span small { display: block; font-size: 11px; font-weight: 600; color: var(--muted); }
-.chip input:checked + span { background: var(--accent); color: var(--accent-ink); box-shadow: none; }
-.chip.r0 input:checked + span, .chip.r1 input:checked + span, .chip.r2 input:checked + span { background: var(--rc); }
-.chip input:checked + span small { color: var(--accent-ink); }
-.chip input:focus-visible + span { outline: 2px solid var(--accent); }
 
 @media (min-width: 700px) {
   body { font-size: 15px; }
