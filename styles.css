@@ -372,3 +372,12 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .weeknav .copymode-btn { font-size: 17px; }
 .weeknav .copymode-btn.on { background: var(--accent); color: var(--accent-ink); }
 .picking .card { outline: 2px dashed color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; }
+
+/* Drag blocks to reorder */
+.block-head .block-title { flex: 1; }
+.grip {
+  flex: none; display: grid; place-items: center; width: 30px; height: 34px; margin: 0 4px 0 -6px;
+  font-size: 22px; color: color-mix(in srgb, var(--accent) 70%, var(--muted)); cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.block { transition: transform .15s ease; }
+.block.dragging { transition: none; position: relative; z-index: 2; box-shadow: 0 8px 24px rgba(60, 50, 120, .22); cursor: grabbing; }

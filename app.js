@@ -36,8 +36,13 @@
   // "45" → 45 min (or 45 s when plainUnit = 's'), "45:30" → mm:ss, "1:05:00" → h:mm:ss, "1h05" also ok.
   function parseDuration(str, plainUnit = 'min') {
     if (str === null || str === undefined) return null;
-    const s = String(str).trim().toLowerCase().replace(',', '.');
+    const s = String(str).trim().toLowerCase().replace(/,/g, '.');
     if (!s) return null;
+    // Phone number pads have no ":", so "." (or ",") works too: 4.30 → 4:30, 1.05.00 → 1:05:00
+    if (/^\d+(?:[.:]\d{2}){1,2}$/.test(s)) {
+      const p = s.split(/[.:]/).map(Number);
+      return p.length === 2 ? p[0] * 60 + p[1] : p[0] * 3600 + p[1] * 60 + p[2];
+    }
     const h = s.match(/^(\d+(?:\.\d+)?)\s*h\s*(\d+)?\s*(?:m(?:in)?)?$/);
     if (h) return Math.round(+h[1] * 3600 + (+(h[2] || 0)) * 60);
     if (/^\d+(\.\d+)?$/.test(s)) return Math.round(+s * (plainUnit === 's' ? 1 : 60));
@@ -446,10 +451,10 @@
   const triadFields = (prefix, km, sec, opts = {}) => `
     <div class="row">
       <label class="field"><span>Distance (km)</span><input name="${prefix}_distance_km" data-role="dist" inputmode="decimal" placeholder="${opts.distPh || 'km'}" value="${esc(fmtKm2(km))}"></label>
-      <label class="field"><span>${opts.timeLabel || 'Time'}</span><input name="${prefix}_duration" data-role="time" inputmode="numeric" placeholder="${opts.timePh || 'mm:ss or h:mm:ss'}" value="${esc(fmtDuration(sec))}"></label>
+      <label class="field"><span>${opts.timeLabel || 'Time'}</span><input name="${prefix}_duration" data-role="time" inputmode="decimal" data-dur="min" placeholder="${opts.timePh || 'mm:ss or h:mm:ss'}" value="${esc(fmtDuration(sec))}"></label>
     </div>
     <div class="row">
-      <label class="field"><span>Pace (min/km)</span><input name="${prefix}_pace" data-role="pace" inputmode="numeric" placeholder="m:ss"></label>
+      <label class="field"><span>Pace (min/km)</span><input name="${prefix}_pace" data-role="pace" inputmode="decimal" data-dur="min" placeholder="m:ss"></label>
       <label class="field"><span>Speed (km/h)</span><input name="${prefix}_speed" data-role="speed" inputmode="decimal" placeholder="km/h"></label>
     </div>`;
 
@@ -476,7 +481,7 @@
             </div>
             <div id="plannedFields">
               <div data-triad id="plannedTriad">${triadFields('planned', num(draft.planned_distance_km), num(draft.planned_duration_s), { distPh: 'e.g. 10', timeLabel: 'Duration' })}</div>
-              <p class="hint">Fill in any two of distance, time and pace/speed and the third is calculated.</p>
+              <p class="hint">Fill in any two of distance, time and pace/speed and the third is calculated. Times can use a dot: 4.30 = 4:30.</p>
               <div class="calc" id="plannedCalc"></div>
             </div>
           </div>
@@ -568,6 +573,53 @@
     return null;
   }
 
+  const GRIP = '<span class="grip" data-grip aria-label="Drag to reorder" title="Drag to reorder">⠿</span>';
+
+  // ----- Drag a block by its ⠿ handle to reorder -----
+  let drag = null;
+  dlg.addEventListener('pointerdown', (e) => {
+    const grip = e.target.closest('[data-grip]');
+    if (!grip) return;
+    e.preventDefault();
+    readForm();
+    const el = grip.closest('.block');
+    const blocks = $$('.block', dlg);
+    const from = blocks.indexOf(el);
+    const rects = blocks.map((b) => b.getBoundingClientRect());
+    const step = blocks.length > 1 ? Math.abs(rects[1].top - rects[0].top) - rects[0].height + rects[from].height : rects[from].height;
+    drag = { el, blocks, rects, from, to: from, y0: e.clientY, step, id: e.pointerId };
+    grip.setPointerCapture(e.pointerId);
+    el.classList.add('dragging');
+  });
+  dlg.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const { el, blocks, rects, from, step } = drag;
+    const dy = e.clientY - drag.y0;
+    el.style.transform = `translateY(${dy}px)`;
+    const mid = rects[from].top + rects[from].height / 2 + dy;
+    let to = 0;
+    rects.forEach((r, i) => { if (i !== from && mid > r.top + r.height / 2) to++; });
+    drag.to = to;
+    blocks.forEach((b, i) => {
+      if (i === from) return;
+      const shift = from < i && i <= to ? -step : to <= i && i < from ? step : 0;
+      b.style.transform = shift ? `translateY(${shift}px)` : '';
+    });
+  });
+  function endDrag(e) {
+    if (!drag || e.pointerId !== drag.id) return;
+    const { blocks, from, to } = drag;
+    drag = null;
+    blocks.forEach((b) => { b.style.transform = ''; b.classList.remove('dragging'); });
+    if (from === to) return;
+    const list = $('#blockSec', dlg).dataset.mode === 'segments' ? draft._seg : draft._iv;
+    list.splice(to, 0, list.splice(from, 1)[0]);
+    renderBlocks();
+    updateEditor();
+  }
+  dlg.addEventListener('pointerup', endDrag);
+  dlg.addEventListener('pointercancel', endDrag);
+
   function renderBlocks() {
     const sec = $('#blockSec', dlg);
     const mode = blockMode();
@@ -580,17 +632,18 @@
 
   function renderIntervals(sec) {
     if (!draft._iv.length) draft._iv.push(newInterval());
+    const grip = draft._iv.length > 1 ? GRIP : '';
     sec.innerHTML = `<h3>Interval blocks</h3>
       ${draft._iv.map((b, i) => `
         <div class="block" data-i="${i}">
-          <div class="block-head"><span>Block ${i + 1}</span><button type="button" class="btn small danger" data-act="rmblock" data-i="${i}">Remove</button></div>
+          <div class="block-head">${grip}<span class="block-title">Block ${i + 1}</span><button type="button" class="btn small danger" data-act="rmblock" data-i="${i}">Remove</button></div>
           <div class="row3">
             <label class="field"><span>Reps</span><input name="reps" inputmode="numeric" value="${esc(b.reps ?? '')}"></label>
             <label class="field"><span>Distance (m or km)</span><input name="distance_m" inputmode="decimal" placeholder="900 or 0.9" value="${esc(b.distance_m ?? '')}"></label>
-            <label class="field"><span>Target pace</span><input name="target_pace" inputmode="numeric" placeholder="m:ss /km" value="${esc(fmtDuration(b.target_pace_s))}"></label>
+            <label class="field"><span>Target pace</span><input name="target_pace" inputmode="decimal" data-dur="min" placeholder="m:ss /km" value="${esc(fmtDuration(b.target_pace_s))}"></label>
           </div>
           <div class="row">
-            <label class="field"><span>Recovery (sec or m:ss)</span><input name="recovery" inputmode="numeric" value="${esc(b.recovery_s ?? '')}"></label>
+            <label class="field"><span>Recovery (sec or m.ss)</span><input name="recovery" inputmode="decimal" data-dur="s" value="${esc(fmtDuration(b.recovery_s))}"></label>
             <label class="field"><span>Recovery type</span><select name="recovery_kind">
               ${['jog', 'walk', 'stand'].map((k) => `<option ${b.recovery_kind === k ? 'selected' : ''}>${k}</option>`).join('')}
             </select></label>
@@ -599,33 +652,34 @@
           <div class="splits">
             ${Array.from({ length: b.reps || 0 }, (_, r) => `
               <label class="split"><span>Rep ${r + 1}</span>
-                <input name="split" inputmode="numeric" placeholder="m:ss" value="${esc(fmtDuration(b.splits?.[r]))}">
+                <input name="split" inputmode="decimal" data-dur="s" placeholder="m:ss" value="${esc(fmtDuration(b.splits?.[r]))}">
                 <small data-splitpace></small></label>`).join('')}
           </div>
         </div>`).join('')}
       <button type="button" class="btn small" data-act="addblock">+ Add block</button>
       <div class="calc" id="ivTotal" style="margin-top:10px"></div>
-      <p class="hint" style="margin-top:8px">Split = time for each rep (m:ss, or plain seconds).</p>`;
+      <p class="hint" style="margin-top:8px">Split = time for each rep: 3.36 or 3:36, or plain seconds. Drag ⠿ to reorder blocks.</p>`;
   }
 
   function renderSegments(sec) {
     if (!draft._seg.length) draft._seg.push(...defaultSegments(draft.type));
+    const grip = draft._seg.length > 1 ? GRIP : '';
     sec.innerHTML = `<h3>Blocks</h3>
       <datalist id="segLabels">${SEGMENT_LABELS.map((l) => `<option value="${esc(l)}">`).join('')}</datalist>
       ${draft._seg.map((b, i) => `
         <div class="block" data-i="${i}" data-kind="segment">
           <div class="block-head">
-            <input class="seg-label" name="seg_label" list="segLabels" placeholder="Block ${i + 1}" value="${esc(b.label || '')}" aria-label="Block name">
+            ${grip}<input class="seg-label" name="seg_label" list="segLabels" placeholder="Block ${i + 1}" value="${esc(b.label || '')}" aria-label="Block name">
             <button type="button" class="btn small danger" data-act="rmblock" data-i="${i}">Remove</button>
           </div>
           <div class="row3" data-triad>
             <label class="field"><span>Distance (km)</span><input name="seg_dist" data-role="dist" inputmode="decimal" placeholder="km" value="${esc(fmtKm2(b.distance_km))}"></label>
-            <label class="field"><span>Target pace</span><input name="seg_pace" data-role="pace" inputmode="numeric" placeholder="m:ss /km" value="${esc(fmtDuration(b.target_pace_s))}"></label>
-            <label class="field"><span>Target time</span><input name="seg_time" data-role="time" inputmode="numeric" placeholder="m:ss"></label>
+            <label class="field"><span>Target pace</span><input name="seg_pace" data-role="pace" inputmode="decimal" data-dur="min" placeholder="m:ss /km" value="${esc(fmtDuration(b.target_pace_s))}"></label>
+            <label class="field"><span>Target time</span><input name="seg_time" data-role="time" inputmode="decimal" data-dur="min" placeholder="m:ss"></label>
           </div>
           <div class="calc" data-segtarget></div>
           <div class="row seg-actual">
-            <label class="field"><span>Actual time</span><input name="seg_actual" inputmode="numeric" placeholder="m:ss" value="${esc(fmtDuration(b.actual_s))}"></label>
+            <label class="field"><span>Actual time</span><input name="seg_actual" inputmode="decimal" data-dur="min" placeholder="m:ss" value="${esc(fmtDuration(b.actual_s))}"></label>
             <div class="seg-actual-pace" data-segpace></div>
           </div>
         </div>`).join('')}
@@ -787,6 +841,11 @@
   });
   dlg.addEventListener('change', (e) => {
     const n = e.target.name;
+    // Tidy typed times on leaving the field: 4.30 → 4:30, 45 → 45:00
+    if (e.target.dataset.dur) {
+      const v = parseDuration(e.target.value, e.target.dataset.dur);
+      if (v) e.target.value = fmtDuration(v);
+    }
     if (n === 'type' || n === 'actual_type' || n === 'status') {
       readForm();
       if ((blockMode() || '') !== $('#blockSec', dlg).dataset.mode) renderBlocks();
