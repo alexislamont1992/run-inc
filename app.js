@@ -63,6 +63,7 @@
   const fmtPace = (secPerKm) => (secPerKm ? `${fmtDuration(secPerKm)}/km` : '–');
   const kmh = (km, sec) => (km > 0 && sec > 0 ? km / (sec / 3600) : null);
   const fmtSpeed = (v) => (v ? v.toFixed(1) : '–');
+  const paceSpeeds = (secPerKm) => (secPerKm ? `${fmtSpeed(3600 / secPerKm)} km/h · ${fmtSpeed(3600 / secPerKm / KM_PER_MILE)} mph` : '');
   function speedLine(km, sec) {
     const p = paceOf(km, sec);
     if (!p) return '';
@@ -88,6 +89,11 @@
     .filter((b) => b.kind !== 'segment' && b.reps && b.distance_m)
     .map((b) => `${b.reps}×${b.distance_m >= 1000 && b.distance_m % 1000 === 0 ? b.distance_m / 1000 + 'k' : b.distance_m}`)
     .join(' + ');
+
+  // Total rep distance of interval blocks, in km
+  const intervalsKm = (blocks) => (blocks || [])
+    .filter((b) => b.kind !== 'segment' && b.reps && b.distance_m)
+    .reduce((s, b) => s + (b.reps * b.distance_m) / 1000, 0);
 
   const segmentsSummary = (blocks) => (blocks || [])
     .filter((b) => b.kind === 'segment' && b.distance_km)
@@ -251,7 +257,8 @@
       const p = paceOf(act.km, act.sec);
       meta = p ? fmtPace(p) : act.sec ? fmtDuration(act.sec) : '';
     } else {
-      dist = pk !== null ? `${fmtKm(pk)} km` : ps ? fmtDuration(ps) : '';
+      const ivKm = r.type === 'Intervals' ? intervalsKm(r.intervals) : 0;
+      dist = pk !== null ? `${fmtKm(pk)} km` : ivKm ? `${fmtKm(ivKm)} km` : ps ? fmtDuration(ps) : '';
       meta = pk !== null && ps ? fmtDuration(ps) : '';
     }
     const iv = intervalsSummary(r.intervals) || segmentsSummary(r.intervals);
@@ -355,7 +362,10 @@
     const order = (g.dataset.order || '').split(',').filter(Boolean);
     if (order.length < 2) return;
     const target = ['dist', 'time', 'pace'].find((r) => !order.includes(r));
-    const km = numIn(get('dist').value), sec = parseDuration(get('time').value), pace = parseDuration(get('pace').value);
+    const km = numIn(get('dist').value), sec = parseDuration(get('time').value);
+    // Keep the unrounded pace from triadInit while the pace field still shows it
+    const exact = +g.dataset.exactPace;
+    const pace = exact && get('pace').value === fmtDuration(exact) ? exact : parseDuration(get('pace').value);
     let out = '';
     if (target === 'dist' && sec && pace) out = fmtKm2(sec / pace);
     if (target === 'time' && km && pace) out = fmtDuration(km * pace);
@@ -387,8 +397,22 @@
     g.dataset.order = order.join(',');
     triadCompute(g);
   }
+  // With a saved distance and time, show the pace and treat it as fixed:
+  // changing the distance then changes the time, not the pace.
   function triadInit(g) {
-    const filled = ['dist', 'time', 'pace'].filter((r) => $(`[data-role="${r}"]`, g).value.trim());
+    const get = (r) => $(`[data-role="${r}"]`, g);
+    delete g.dataset.exactPace;
+    const km = numIn(get('dist').value), sec = parseDuration(get('time').value);
+    if (km > 0 && sec > 0 && !get('pace').value.trim()) {
+      g.dataset.exactPace = sec / km;
+      get('pace').value = fmtDuration(sec / km);
+      if (get('speed')) get('speed').value = (km / (sec / 3600)).toFixed(1);
+      g.dataset.order = 'dist,pace';
+      $$('[data-role]', g).forEach((el) => el.classList.remove('is-calc'));
+      get('time').classList.add('is-calc');
+      return;
+    }
+    const filled = ['dist', 'time', 'pace'].filter((r) => get(r).value.trim());
     g.dataset.order = filled.slice(0, 2).join(',');
     triadCompute(g);
   }
@@ -423,9 +447,11 @@
               <label class="field"><span>Type</span><select name="type">${typeOptions(draft.type)}</select></label>
               <label class="field"><span>Date</span><input type="date" name="run_date" value="${esc(draft.run_date)}"></label>
             </div>
-            <div data-triad id="plannedTriad">${triadFields('planned', num(draft.planned_distance_km), num(draft.planned_duration_s), { distPh: 'e.g. 10', timeLabel: 'Duration' })}</div>
-            <p class="hint">Fill in any two of distance, time and pace/speed and the third is calculated.</p>
-            <div class="calc" id="plannedCalc"></div>
+            <div id="plannedFields">
+              <div data-triad id="plannedTriad">${triadFields('planned', num(draft.planned_distance_km), num(draft.planned_duration_s), { distPh: 'e.g. 10', timeLabel: 'Duration' })}</div>
+              <p class="hint">Fill in any two of distance, time and pace/speed and the third is calculated.</p>
+              <div class="calc" id="plannedCalc"></div>
+            </div>
           </div>
 
           <div class="fsec" id="blockSec"></div>
@@ -452,7 +478,7 @@
             <label class="field"><textarea name="notes" rows="3" placeholder="How did it feel? Route, weather, shoes…">${esc(draft.notes || '')}</textarea></label>
           </div>
 
-          <details class="fsec copybox" id="copySec"></details>
+          <div class="fsec"><button type="button" class="btn copy-open" data-act="copyrun">⧉ Copy to other runners or days…</button></div>
         </div>
         <div class="ed-foot">
           ${isNew ? '' : '<button type="button" class="btn danger" data-act="delete">Delete</button>'}
@@ -466,7 +492,6 @@
     triadInit($('#actualTriad', dlg));
     readForm();
     renderBlocks();
-    renderCopy();
     updateEditor();
     dlg.showModal();
     $('.ed-body', dlg).scrollTop = 0;
@@ -502,6 +527,18 @@
       b.recovery_kind = $('[name=recovery_kind]', el).value;
       b.splits = $$('[name=split]', el).map((inp) => parseDuration(inp.value, 's'));
     });
+    // Intervals / Long / Tempo: the plan is the blocks, so their totals become the planned distance and time
+    const t = blockPlanTotals();
+    if (t && t.km) {
+      draft.planned_distance_km = Math.round(t.km * 100) / 100;
+      draft.planned_duration_s = t.planned ? Math.round(t.planned) : null;
+    }
+  }
+  const plansFromBlocks = (type) => type === 'Intervals' || SEGMENT_TYPES.includes(type);
+  function blockPlanTotals() {
+    if (draft.type === 'Intervals') return intervalTotals();
+    if (SEGMENT_TYPES.includes(draft.type)) return segmentTotals();
+    return null;
   }
 
   function renderBlocks() {
@@ -540,6 +577,7 @@
           </div>
         </div>`).join('')}
       <button type="button" class="btn small" data-act="addblock">+ Add block</button>
+      <div class="calc" id="ivTotal" style="margin-top:10px"></div>
       <p class="hint" style="margin-top:8px">Split = time for each rep (m:ss, or plain seconds).</p>`;
   }
 
@@ -558,6 +596,7 @@
             <label class="field"><span>Target pace</span><input name="seg_pace" data-role="pace" inputmode="numeric" placeholder="m:ss /km" value="${esc(fmtDuration(b.target_pace_s))}"></label>
             <label class="field"><span>Target time</span><input name="seg_time" data-role="time" inputmode="numeric" placeholder="m:ss"></label>
           </div>
+          <div class="calc" data-segtarget></div>
           <div class="row seg-actual">
             <label class="field"><span>Actual time</span><input name="seg_actual" inputmode="numeric" placeholder="m:ss" value="${esc(fmtDuration(b.actual_s))}"></label>
             <div class="seg-actual-pace" data-segpace></div>
@@ -566,7 +605,6 @@
       <button type="button" class="btn small" data-act="addblock">+ Add block</button>
       <div class="calc" id="segTotal" style="margin-top:10px"></div>
       <div class="seg-use">
-        <button type="button" class="btn small" data-act="seg-plan">Use as planned total</button>
         <button type="button" class="btn small" data-act="seg-actual">Use as actual total</button>
       </div>`;
     $$('[data-triad]', sec).forEach(triadInit);
@@ -578,22 +616,6 @@
     const planned = segs.length && segs.every((b) => b.target_pace_s) ? segs.reduce((s, b) => s + b.distance_km * b.target_pace_s, 0) : null;
     const actual = segs.length && segs.every((b) => b.actual_s) ? segs.reduce((s, b) => s + b.actual_s, 0) : null;
     return { km, planned, actual };
-  }
-
-  function renderCopy() {
-    const box = $('#copySec', dlg);
-    const open = box.open;
-    const wk = mondayOf(parseISO(draft.run_date));
-    const dayChip = (d) => `<label class="chip"><input type="checkbox" name="copy_day" value="${iso(d)}"><span>${d.toLocaleDateString('en-GB', { weekday: 'short' })}<small>${d.getDate()}</small></span></label>`;
-    const days = (start) => Array.from({ length: 7 }, (_, i) => dayChip(addDays(start, i))).join('');
-    box.innerHTML = `<summary>⧉ Copy this workout to other days…</summary>
-      <div class="chips-label">For</div>
-      <div class="chips">${RUNNERS.map((r, i) => `<label class="chip r${i}"><input type="checkbox" name="copy_runner" value="${esc(r)}" ${r === draft.runner ? 'checked' : ''}><span>${esc(r)}</span></label>`).join('')}</div>
-      <div class="chips-label">This week</div><div class="chips days">${days(wk)}</div>
-      <div class="chips-label">Next week</div><div class="chips days">${days(addDays(wk, 7))}</div>
-      <button type="button" class="btn small primary" data-act="copyrun">Copy</button>
-      <p class="hint" style="margin-top:8px">Copies the plan as it is in this form (type, distance, time, blocks, notes) as “planned”.<br>Tip: long-press a card in the grid (or tap ⧉ at the top, then the card) to copy it without opening it.</p>`;
-    box.open = open;
   }
 
   // Strip what was actually done from a block, keeping only the plan
@@ -610,36 +632,11 @@
     return [];
   }
 
-  async function copyWorkout() {
-    readForm();
-    const runnersSel = $$('[name=copy_runner]:checked', dlg).map((el) => el.value);
-    const daysSel = $$('[name=copy_day]:checked', dlg).map((el) => el.value);
-    if (!runnersSel.length || !daysSel.length) { toast('Pick at least one runner and one day'); return; }
-    // Copies are plain planned runs, so keep the blocks that match the planned type
-    const planMode = draft.type === 'Intervals' ? 'intervals' : SEGMENT_TYPES.includes(draft.type) ? 'segments' : null;
-    const blocks = blocksForSave(planMode).map(planOnlyBlock);
-    const rows = [];
-    for (const runner of runnersSel) {
-      for (const run_date of daysSel) {
-        rows.push({
-          id: uuid(), runner, run_date, type: draft.type, status: 'planned',
-          planned_distance_km: draft.planned_distance_km, planned_duration_s: draft.planned_duration_s,
-          notes: draft.notes, intervals: blocks,
-        });
-      }
-    }
-    try {
-      await Store.insertMany(rows);
-      $$('[name=copy_day]', dlg).forEach((el) => { el.checked = false; });
-      render();
-      toast(`Copied to ${rows.length} day${rows.length === 1 ? '' : 's'}`);
-    } catch (err) { toast('Could not copy: ' + err.message); }
-  }
-
   function updateEditor() {
     readForm();
     const st = draft.status;
     const mphLine = (km, sec) => { const v = kmh(km, sec); return v ? `${fmtPace(paceOf(km, sec))} · ${fmtSpeed(v)} km/h · <b>${fmtSpeed(v / KM_PER_MILE)} mph</b>` : ''; };
+    $('#plannedFields', dlg).hidden = plansFromBlocks(draft.type);
     $('#plannedCalc', dlg).innerHTML = mphLine(draft.planned_distance_km, draft.planned_duration_s);
 
     // Actual section only for done / swapped
@@ -655,7 +652,7 @@
     f.actual_duration.placeholder = st === 'done' && draft.planned_duration_s ? fmtDuration(draft.planned_duration_s) : 'mm:ss or h:mm:ss';
 
     const mode = $('#blockSec', dlg).dataset.mode;
-    if (mode === 'intervals') updateIntervalCalcs();
+    if (mode === 'intervals') { updateIntervalCalcs(); updateIntervalTotal(); }
     if (mode === 'segments') updateSegmentCalcs();
     renderCompare();
   }
@@ -666,8 +663,13 @@
       const work = (b.reps || 0) * (b.distance_m || 0);
       const done = (b.splits || []).filter((s) => s);
       const avg = done.length ? done.reduce((x, y) => x + y, 0) / done.length : null;
-      $('[data-blocksum]', el).innerHTML = work ? `${b.reps} × ${b.distance_m} m${b.target_pace_s ? ` @ ${fmtPace(b.target_pace_s)}` : ''}${b.recovery_s ? `, ${fmtDuration(b.recovery_s)} ${b.recovery_kind}` : ''} · work ${fmtKm(work / 1000)} km` +
-        (avg && b.distance_m ? `<br>Avg rep <b>${fmtDuration(avg)}</b> → <b>${fmtPace(avg / (b.distance_m / 1000))}</b>` : '') : '';
+      const workKm = work / 1000, t = b.target_pace_s;
+      const avgP = avg && b.distance_m ? avg / (b.distance_m / 1000) : null;
+      $('[data-blocksum]', el).innerHTML = work
+        ? `${b.reps} × ${b.distance_m} m = <b>${fmtKm2(workKm)} km</b>${b.recovery_s ? ` · ${fmtDuration(b.recovery_s)} ${b.recovery_kind}` : ''}` +
+          (t ? `<br>Target <b>${fmtPace(t)}</b> · ${paceSpeeds(t)} · ${fmtDuration(t * b.distance_m / 1000)}/rep, ${fmtDuration(t * workKm)} total` : '') +
+          (avgP ? `<br>Avg rep <b>${fmtDuration(avg)}</b> → <b>${fmtPace(avgP)}</b> · ${paceSpeeds(avgP)}` : '')
+        : '';
       const targetRep = b.target_pace_s && b.distance_m ? fmtDuration(b.target_pace_s * b.distance_m / 1000) : 'm:ss';
       $$('[name=split]', el).forEach((inp) => { inp.placeholder = targetRep; });
       $$('[data-splitpace]', el).forEach((small, r) => {
@@ -681,35 +683,49 @@
     });
   }
 
+  function intervalTotals() {
+    const blocks = draft._iv.filter((b) => b.reps && b.distance_m);
+    const km = intervalsKm(blocks);
+    const planned = blocks.length && blocks.every((b) => b.target_pace_s) ? blocks.reduce((s, b) => s + b.target_pace_s * b.reps * b.distance_m / 1000, 0) : null;
+    return { km, planned };
+  }
+  function updateIntervalTotal() {
+    const { km, planned: timed } = intervalTotals();
+    $('#ivTotal', dlg).innerHTML = km
+      ? `Total reps <b>${fmtKm2(km)} km</b>${timed ? `<br>Target <b>${fmtDuration(timed)}</b> · ${fmtPace(timed / km)} · ${paceSpeeds(timed / km)}` : ''}`
+      : '';
+  }
+
   function updateSegmentCalcs() {
     $$('.block', dlg).forEach((el) => {
       const b = draft._seg[+el.dataset.i];
       const out = $('[data-segpace]', el);
+      $('[data-segtarget]', el).innerHTML = b.target_pace_s ? `Target <b>${fmtPace(b.target_pace_s)}</b> · ${paceSpeeds(b.target_pace_s)}` : '';
       $('[name=seg_actual]', el).placeholder = b.distance_km && b.target_pace_s ? fmtDuration(b.distance_km * b.target_pace_s) : 'm:ss';
       if (!b.actual_s || !b.distance_km) { out.innerHTML = ''; return; }
       const p = b.actual_s / b.distance_km;
       const cls = b.target_pace_s ? (p <= b.target_pace_s + 1 ? 'fast' : 'slow') : '';
-      out.innerHTML = `<b class="${cls}">${fmtPace(p)}</b><br>${fmtSpeed(kmh(b.distance_km, b.actual_s))} km/h`;
+      out.innerHTML = `<b class="${cls}">${fmtPace(p)}</b><br>${paceSpeeds(p)}`;
     });
     const t = segmentTotals();
     $('#segTotal', dlg).innerHTML = t.km
-      ? `Total <b>${fmtKm2(t.km)} km</b>${t.planned ? ` · planned <b>${fmtDuration(t.planned)}</b> (${fmtPace(t.planned / t.km)})` : ''}${t.actual ? ` · actual <b>${fmtDuration(t.actual)}</b> (${fmtPace(t.actual / t.km)})` : ''}`
+      ? `Total <b>${fmtKm2(t.km)} km</b>${t.planned ? `<br>Planned <b>${fmtDuration(t.planned)}</b> · ${fmtPace(t.planned / t.km)} · ${paceSpeeds(t.planned / t.km)}` : ''}${t.actual ? `<br>Actual <b>${fmtDuration(t.actual)}</b> · ${fmtPace(t.actual / t.km)} · ${paceSpeeds(t.actual / t.km)}` : ''}`
       : '';
     $('[data-act="seg-actual"]', dlg).hidden = !(draft.status === 'done' || draft.status === 'swapped');
   }
 
-  // Put block totals into the planned or actual distance/time fields
-  function useSegmentTotals(which) {
+  // Put the blocks' actual totals into the actual distance/time fields
+  function useSegmentActuals() {
     readForm();
     const t = segmentTotals();
-    const sec = which === 'plan' ? t.planned : t.actual;
+    const sec = t.actual;
     if (!t.km) { toast('Add distances to the blocks first'); return; }
-    const g = $(which === 'plan' ? '#plannedTriad' : '#actualTriad', dlg);
+    const g = $('#actualTriad', dlg);
     $('[data-role="dist"]', g).value = fmtKm2(t.km);
     $('[data-role="time"]', g).value = sec ? fmtDuration(sec) : '';
     $('[data-role="pace"]', g).value = '';
     triadInit(g);
-    if (!sec) toast(which === 'plan' ? 'Distance set; add a target pace to every block for the time' : 'Distance set; add an actual time to every block for the time');
+    if (!sec) toast('Distance set; add an actual time to every block for the time');
     updateEditor();
   }
 
@@ -748,7 +764,6 @@
       readForm();
       if ((blockMode() || '') !== $('#blockSec', dlg).dataset.mode) renderBlocks();
     }
-    if (n === 'run_date') { readForm(); renderCopy(); }
     updateEditor();
   });
   function restoreFocus(oldEl) {
@@ -776,9 +791,14 @@
       if (!list.length) list.push(mode === 'segments' ? newSegment() : { reps: 0, distance_m: null, target_pace_s: null, recovery_s: null, recovery_kind: 'jog', splits: [] });
       renderBlocks(); updateEditor(); return;
     }
-    if (act === 'seg-plan') { useSegmentTotals('plan'); return; }
-    if (act === 'seg-actual') { useSegmentTotals('actual'); return; }
-    if (act === 'copyrun') { btn.disabled = true; await copyWorkout(); btn.disabled = false; return; }
+    if (act === 'seg-actual') { useSegmentActuals(); return; }
+    if (act === 'copyrun') {
+      readForm();
+      // Copies are plain planned runs, so keep the blocks that match the planned type
+      const planMode = draft.type === 'Intervals' ? 'intervals' : SEGMENT_TYPES.includes(draft.type) ? 'segments' : null;
+      openCopier({ ...draft, intervals: blocksForSave(planMode) });
+      return;
+    }
     if (act === 'delete') {
       if (!confirm('Delete this run?')) return;
       try { await Store.remove(draft.id); dlg.close(); render(); toast('Run deleted'); } catch (err) { toast('Could not delete: ' + err.message); }
@@ -856,19 +876,115 @@
     bar.innerHTML = `<span class="card-dot ${typeClass(clip.type)}"></span>
       <span class="cliptext"><b>Copying ${esc(clip.type)}${km !== null ? ` · ${fmtKm(km)} km` : ''}</b>
       <small>Tap any “Paste” to add it · from ${esc(clip.runner)}, ${fmtDay(parseISO(clip.run_date))}</small></span>
+      <button class="clipdone" data-clipdays>Pick days…</button>
       <button class="clipdone" data-clipdone>Done</button>`;
   }
-  async function pasteClip(runner, run_date) {
-    const blocks = (clip.intervals || [])
-      .filter((b) => (clip.type === 'Intervals' ? b.kind !== 'segment' : SEGMENT_TYPES.includes(clip.type) && b.kind === 'segment'))
+  // A fresh planned run with src's plan (type, distance, time, matching blocks, notes)
+  function planCopy(src, runner, run_date) {
+    const blocks = (src.intervals || [])
+      .filter((b) => (src.type === 'Intervals' ? b.kind !== 'segment' : SEGMENT_TYPES.includes(src.type) && b.kind === 'segment'))
       .map(planOnlyBlock);
-    const row = {
-      id: uuid(), runner, run_date, type: clip.type, status: 'planned',
-      planned_distance_km: clip.planned_distance_km, planned_duration_s: clip.planned_duration_s,
-      notes: clip.notes, intervals: blocks,
+    return {
+      id: uuid(), runner, run_date, type: src.type, status: 'planned',
+      planned_distance_km: src.planned_distance_km, planned_duration_s: src.planned_duration_s,
+      notes: src.notes, intervals: blocks,
     };
-    try { await Store.insertMany([row]); render(); toast(`Pasted to ${runner} · ${fmtDay(parseISO(run_date))}`); } catch (err) { toast('Could not paste: ' + err.message); }
   }
+  async function pasteClip(runner, run_date) {
+    try { await Store.insertMany([planCopy(clip, runner, run_date)]); render(); toast(`Pasted to ${runner} · ${fmtDay(parseISO(run_date))}`); } catch (err) { toast('Could not paste: ' + err.message); }
+  }
+
+  // ---------- Copy picker: any runners × any days in the next 6 weeks ----------
+  const COPY_WEEKS = 6;
+  const copier = $('#copier');
+  let copySrc = null;
+  function openCopier(src) {
+    copySrc = JSON.parse(JSON.stringify(src));
+    const t = today(), tIso = iso(t), srcDate = parseISO(copySrc.run_date);
+    const start = mondayOf(srcDate > t ? srcDate : t);
+    const km = num(copySrc.planned_distance_km), sec = num(copySrc.planned_duration_s);
+    const what = km !== null ? ` · ${fmtKm(km)} km` : sec ? ` · ${fmtDuration(sec)}` : '';
+    let rows = '';
+    for (let w = 0; w < COPY_WEEKS; w++) {
+      const mon = addDays(start, 7 * w);
+      rows += `<span class="cal-wk">${mon.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>`;
+      for (let i = 0; i < 7; i++) {
+        const d = addDays(mon, i), ds = iso(d);
+        const cls = (ds === copySrc.run_date ? ' is-src' : '') + (ds === tIso ? ' is-today' : '');
+        rows += `<label class="chip cday${cls}"><input type="checkbox" name="cday" value="${ds}" data-wd="${i}" ${ds < tIso ? 'disabled' : ''}>
+          <span>${d.getDate()}<i class="dots" data-dots="${ds}"></i></span></label>`;
+      }
+    }
+    copier.innerHTML = `
+      <form method="dialog" novalidate>
+        <div class="ed-head">
+          <h2>Copy ${esc(copySrc.type)}${what}<small>from ${esc(copySrc.runner)} · ${fmtDay(srcDate)}</small></h2>
+          <button type="button" class="icon-btn" data-cact="close" aria-label="Close">✕</button>
+        </div>
+        <div class="ed-body">
+          <div class="chips-label">To</div>
+          <div class="chips">${RUNNERS.map((r, i) => `<label class="chip r${i}"><input type="checkbox" name="crunner" value="${esc(r)}" ${r === copySrc.runner ? 'checked' : ''}><span>${esc(r)}</span></label>`).join('')}</div>
+          <div class="chips-label">Days <small>· tap a weekday to pick it in every week</small></div>
+          <div class="cal">
+            <span></span>
+            ${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((n, i) => `<button type="button" class="cal-wd" data-cact="weekday" data-wd="${i}">${n}</button>`).join('')}
+            ${rows}
+          </div>
+          <p class="hint" style="margin-top:10px">Dots = runs already planned that day. Copies are added as “planned”, keeping the type, distance, time, blocks and notes.</p>
+        </div>
+        <div class="ed-foot">
+          <span class="copy-count" id="copyCount"></span>
+          <span class="spacer"></span>
+          <button type="button" class="btn" data-cact="close">Cancel</button>
+          <button type="submit" class="btn primary" data-cact="copy">Copy</button>
+        </div>
+      </form>`;
+    updateCopier();
+    copier.showModal();
+  }
+  function updateCopier() {
+    const who = $$('[name=crunner]:checked', copier).map((el) => el.value);
+    const days = $$('[name=cday]:checked', copier);
+    $$('[data-dots]', copier).forEach((el) => {
+      const d = parseISO(el.dataset.dots);
+      el.innerHTML = RUNNERS.map((r, i) => (who.includes(r) && runsFor(r, d, d).length ? `<b class="r${i}"></b>` : '')).join('');
+    });
+    const n = who.length * days.length;
+    $('#copyCount', copier).textContent = n ? `${n} run${n === 1 ? '' : 's'}` : 'Pick runners and days';
+    $('[data-cact="copy"]', copier).disabled = !n;
+  }
+  copier.addEventListener('change', updateCopier);
+  copier.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-cact]');
+    if (!btn) return;
+    const act = btn.dataset.cact;
+    if (act === 'close') { copier.close(); return; }
+    if (act === 'weekday') {
+      const boxes = $$(`[name=cday][data-wd="${btn.dataset.wd}"]:not(:disabled)`, copier);
+      const on = !boxes.every((el) => el.checked);
+      boxes.forEach((el) => { el.checked = on; });
+      updateCopier();
+      return;
+    }
+    if (act === 'copy') {
+      e.preventDefault();
+      const who = $$('[name=crunner]:checked', copier).map((el) => el.value);
+      const days = $$('[name=cday]:checked', copier).map((el) => el.value);
+      const rows = who.flatMap((r) => days.map((d) => planCopy(copySrc, r, d)));
+      if (!rows.length) return;
+      btn.disabled = true;
+      try {
+        await Store.insertMany(rows);
+        copier.close();
+        if (clip) endClip(); else render();
+        toast(`Copied ${rows.length} run${rows.length === 1 ? '' : 's'}`);
+      } catch (err) {
+        toast('Could not copy: ' + err.message);
+        btn.disabled = false;
+      }
+    }
+  });
+  copier.addEventListener('close', () => { copySrc = null; });
 
   // ---------- Toast ----------
   let toastTimer;
@@ -952,8 +1068,11 @@
     picking = true;
     render();
   };
-  $('#clipbar').addEventListener('click', (e) => { if (e.target.closest('[data-clipdone]')) endClip(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && (clip || picking) && !dlg.open) endClip(); });
+  $('#clipbar').addEventListener('click', (e) => {
+    if (e.target.closest('[data-clipdone]')) endClip();
+    else if (e.target.closest('[data-clipdays]') && clip) openCopier(clip);
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && (clip || picking) && !dlg.open && !copier.open) endClip(); });
   $('#colheads').addEventListener('click', (e) => {
     const b = e.target.closest('[data-copy]');
     if (b) copyLastWeek(b.dataset.copy);
