@@ -76,8 +76,8 @@
     if (r.status === 'done') {
       return {
         type: r.type,
-        km: num(r.actual_distance_km) ?? num(r.planned_distance_km),
-        sec: num(r.actual_duration_s) ?? num(r.planned_duration_s),
+        km: num(r.actual_distance_km) ?? plannedOf(r).km,
+        sec: num(r.actual_duration_s) ?? plannedOf(r).sec,
       };
     }
     if (r.status === 'swapped') {
@@ -85,15 +85,42 @@
     }
     return null;
   }
-  const intervalsSummary = (blocks) => (blocks || [])
-    .filter((b) => b.kind !== 'segment' && b.reps && b.distance_m)
+  // Rep distance in metres. Small numbers are km (0.9 → 900 m); "900m" and "0.9km" also work.
+  function repMeters(v) {
+    const s = String(v ?? '').trim().toLowerCase().replace(',', '.');
+    const m = s.match(/^(\d+(?:\.\d+)?)\s*(km|k|m)?$/);
+    if (!m) return null;
+    const n = +m[1];
+    if (!n) return null;
+    const km = m[2] === 'km' || m[2] === 'k' || (!m[2] && n < 50);
+    return Math.round(km ? n * 1000 : n);
+  }
+  const repBlocks = (blocks) => (blocks || [])
+    .filter((b) => b.kind !== 'segment')
+    .map((b) => ({ ...b, distance_m: repMeters(b.distance_m) }))
+    .filter((b) => b.reps && b.distance_m);
+
+  const intervalsSummary = (blocks) => repBlocks(blocks)
     .map((b) => `${b.reps}×${b.distance_m >= 1000 && b.distance_m % 1000 === 0 ? b.distance_m / 1000 + 'k' : b.distance_m}`)
     .join(' + ');
 
   // Total rep distance of interval blocks, in km
-  const intervalsKm = (blocks) => (blocks || [])
-    .filter((b) => b.kind !== 'segment' && b.reps && b.distance_m)
-    .reduce((s, b) => s + (b.reps * b.distance_m) / 1000, 0);
+  const intervalsKm = (blocks) => repBlocks(blocks).reduce((s, b) => s + (b.reps * b.distance_m) / 1000, 0);
+
+  // The plan: for Intervals / Long / Tempo it comes from the blocks, otherwise from the planned fields
+  function plannedOf(r) {
+    if (r.type === 'Intervals') {
+      const reps = repBlocks(r.intervals);
+      const km = intervalsKm(reps);
+      if (km) return { km, sec: reps.every((b) => b.target_pace_s) ? reps.reduce((s, b) => s + b.target_pace_s * b.reps * b.distance_m / 1000, 0) : null };
+    }
+    if (r.type === 'Long' || r.type === 'Tempo') {
+      const segs = (r.intervals || []).filter((b) => b.kind === 'segment' && num(b.distance_km));
+      const km = segs.reduce((s, b) => s + num(b.distance_km), 0);
+      if (km) return { km, sec: segs.every((b) => b.target_pace_s) ? segs.reduce((s, b) => s + num(b.distance_km) * b.target_pace_s, 0) : null };
+    }
+    return { km: num(r.planned_distance_km), sec: num(r.planned_duration_s) };
+  }
 
   const segmentsSummary = (blocks) => (blocks || [])
     .filter((b) => b.kind === 'segment' && b.distance_km)
@@ -244,7 +271,7 @@
 
   function cardHTML(r) {
     const act = actualOf(r);
-    const pk = num(r.planned_distance_km), ps = num(r.planned_duration_s);
+    const { km: pk, sec: ps } = plannedOf(r);
     let typeLine = esc(r.type);
     if (r.status === 'swapped' && r.actual_type && r.actual_type !== r.type) typeLine = `${esc(r.type)} ⇄ ${esc(r.actual_type)}`;
 
@@ -257,8 +284,7 @@
       const p = paceOf(act.km, act.sec);
       meta = p ? fmtPace(p) : act.sec ? fmtDuration(act.sec) : '';
     } else {
-      const ivKm = r.type === 'Intervals' ? intervalsKm(r.intervals) : 0;
-      dist = pk !== null ? `${fmtKm(pk)} km` : ivKm ? `${fmtKm(ivKm)} km` : ps ? fmtDuration(ps) : '';
+      dist = pk !== null ? `${fmtKm(pk)} km` : ps ? fmtDuration(ps) : '';
       meta = pk !== null && ps ? fmtDuration(ps) : '';
     }
     const iv = intervalsSummary(r.intervals) || segmentsSummary(r.intervals);
@@ -292,8 +318,9 @@
     let plannedKm = 0, doneKm = 0, plannedSec = 0, doneSec = 0, plannedRuns = 0, doneRuns = 0;
     for (const r of list) {
       if (r.type !== 'Rest') {
-        plannedKm += num(r.planned_distance_km) || 0;
-        plannedSec += num(r.planned_duration_s) || 0;
+        const p = plannedOf(r);
+        plannedKm += p.km || 0;
+        plannedSec += p.sec || 0;
         plannedRuns++;
       }
       const a = actualOf(r);
@@ -429,7 +456,7 @@
   function openEditor(run) {
     draft = JSON.parse(JSON.stringify(run));
     const blocks = Array.isArray(draft.intervals) ? draft.intervals : [];
-    draft._iv = blocks.filter((b) => b.kind !== 'segment');
+    draft._iv = blocks.filter((b) => b.kind !== 'segment').map((b) => ({ ...b, distance_m: repMeters(b.distance_m) ?? b.distance_m }));
     draft._seg = blocks.filter((b) => b.kind === 'segment');
     const isNew = !runs.has(draft.id);
     const d = parseISO(draft.run_date);
@@ -521,7 +548,7 @@
       }
       const b = draft._iv[i];
       b.reps = Math.max(0, Math.min(50, parseInt($('[name=reps]', el).value, 10) || 0));
-      b.distance_m = num($('[name=distance_m]', el).value);
+      b.distance_m = repMeters($('[name=distance_m]', el).value);
       b.target_pace_s = parseDuration($('[name=target_pace]', el).value);
       b.recovery_s = parseDuration($('[name=recovery]', el).value, 's');
       b.recovery_kind = $('[name=recovery_kind]', el).value;
@@ -559,7 +586,7 @@
           <div class="block-head"><span>Block ${i + 1}</span><button type="button" class="btn small danger" data-act="rmblock" data-i="${i}">Remove</button></div>
           <div class="row3">
             <label class="field"><span>Reps</span><input name="reps" inputmode="numeric" value="${esc(b.reps ?? '')}"></label>
-            <label class="field"><span>Distance (m)</span><input name="distance_m" inputmode="numeric" value="${esc(b.distance_m ?? '')}"></label>
+            <label class="field"><span>Distance (m or km)</span><input name="distance_m" inputmode="decimal" placeholder="900 or 0.9" value="${esc(b.distance_m ?? '')}"></label>
             <label class="field"><span>Target pace</span><input name="target_pace" inputmode="numeric" placeholder="m:ss /km" value="${esc(fmtDuration(b.target_pace_s))}"></label>
           </div>
           <div class="row">
