@@ -209,6 +209,15 @@
         this.saveDemo();
       }
     },
+    async removeMany(ids) {
+      if (!ids.length) return;
+      if (sb) {
+        const { error } = await sb.from('runs').delete().in('id', ids);
+        if (error) throw error;
+      }
+      ids.forEach((id) => runs.delete(id));
+      if (!sb) this.saveDemo();
+    },
     async remove(id) {
       if (sb) {
         const { error } = await sb.from('runs').delete().eq('id', id);
@@ -270,7 +279,7 @@
     $('#colheads').innerHTML = RUNNERS.map((r, i) => `
       <div class="colhead r${i}">
         <span class="name">${esc(r)}</span>
-        <button class="copy" data-copy="${esc(r)}" title="Copy last week's plan into this week">⧉ Copy last wk</button>
+        <button class="copy" data-copy="${esc(r)}" title="Replace this week with last week's plan">⧉ Copy last wk</button>
       </div>`).join('');
   }
 
@@ -295,7 +304,7 @@
     const iv = intervalsSummary(r.intervals) || segmentsSummary(r.intervals);
     if (iv) meta = meta ? `${iv} · ${meta}` : iv;
     const showType = r.status === 'swapped' ? (r.actual_type || r.type) : r.type;
-    return `<button class="card ${typeClass(showType)} s-${r.status}${clip && clip.id === r.id ? ' is-clip' : ''}" data-id="${esc(r.id)}">
+    return `<button class="card ${typeClass(showType)} s-${r.status}${selected.has(r.id) ? ' is-clip' : ''}" data-id="${esc(r.id)}">
       <span class="ctype">${typeLine}</span>
       ${dist ? `<span class="cdist">${dist}</span>` : ''}
       ${meta ? `<span class="cmeta">${esc(meta)}</span>` : ''}
@@ -352,6 +361,7 @@
   }
 
   function render() {
+    syncSelection();
     renderCountdown();
     renderWeekLabel();
     renderGrid();
@@ -911,7 +921,7 @@
     if (!src.length) { toast(`${runner} has no runs last week to copy`); return; }
     const existing = runsFor(runner, weekStart, addDays(weekStart, 6));
     const msg = existing.length
-      ? `${runner} already has ${existing.length} run(s) this week. Add last week's ${src.length} planned run(s) as well?`
+      ? `Replace ${runner}'s ${existing.length} run(s) this week with last week's ${src.length}?\n\nThis week's runs will be deleted, including any marked done.`
       : `Copy ${runner}'s ${src.length} run(s) from last week into this week as planned?`;
     if (!confirm(msg)) return;
     const rows = src.map((r) => ({
@@ -925,36 +935,65 @@
       status: 'planned',
       intervals: (r.intervals || []).map(planOnlyBlock),
     }));
-    try { await Store.insertMany(rows); render(); toast(`Copied ${rows.length} run(s) for ${runner}`); } catch (err) { toast('Could not copy: ' + err.message); }
+    // Insert first, then clear the old week, so a failure never leaves the week empty
+    try {
+      await Store.insertMany(rows);
+      await Store.removeMany(existing.map((r) => r.id));
+      render();
+      toast(`Copied ${rows.length} run(s) for ${runner}`);
+    } catch (err) { render(); toast('Could not copy: ' + err.message); }
   }
 
-  // ---------- Quick copy: long-press (or right-click) a card, then tap + to paste ----------
-  let clip = null;
-  let picking = false; // header ⧉ button pressed: next tapped card is copied
+  // ---------- Select: long-press (or right-click) a card, then Paste to copy it, or Delete ----------
+  // Tapping more cards while selecting adds them; copying works with one card selected.
+  const selected = new Set();
+  let clip = null; // the run to paste: set when exactly one card is selected
+  let picking = false; // header ⧉ button pressed: next tapped card is selected
+  function syncSelection() {
+    [...selected].forEach((id) => { if (!runs.has(id)) selected.delete(id); });
+    clip = selected.size === 1 ? runs.get([...selected][0]) : null;
+  }
   function startClip(run) {
-    clip = run;
+    selected.clear();
+    selected.add(run.id);
     picking = false;
     navigator.vibrate?.(15);
     render();
   }
-  function endClip() { clip = null; picking = false; render(); }
+  function toggleSelect(run) {
+    if (selected.has(run.id)) selected.delete(run.id); else selected.add(run.id);
+    navigator.vibrate?.(10);
+    render();
+  }
+  function endClip() { selected.clear(); picking = false; render(); }
+  async function deleteSelected() {
+    const ids = [...selected];
+    if (!ids.length || !confirm(`Delete ${ids.length} run${ids.length === 1 ? '' : 's'}?`)) return;
+    try { await Store.removeMany(ids); endClip(); toast(`Deleted ${ids.length} run${ids.length === 1 ? '' : 's'}`); } catch (err) { toast('Could not delete: ' + err.message); }
+  }
   function renderClipbar() {
     const bar = $('#clipbar');
     document.body.classList.toggle('copying', !!clip);
     document.body.classList.toggle('picking', picking);
-    $('#copyModeBtn').classList.toggle('on', !!clip || picking);
-    bar.hidden = !clip && !picking;
+    $('#copyModeBtn').classList.toggle('on', !!selected.size || picking);
+    bar.hidden = !selected.size && !picking;
     if (picking) {
-      bar.innerHTML = `<span class="cliptext"><b>Copy a run</b><small>Tap the card you want to copy</small></span>
+      bar.innerHTML = `<span class="cliptext"><b>Select a run</b><small>Tap the card you want to copy or delete</small></span>
         <button class="clipdone" data-clipdone>Cancel</button>`;
       return;
     }
-    if (!clip) { bar.innerHTML = ''; return; }
-    const km = num(clip.planned_distance_km);
+    if (!selected.size) { bar.innerHTML = ''; return; }
+    const del = '<button class="clipdone clipdel" data-clipdel aria-label="Delete selected" title="Delete selected">🗑</button>';
+    if (!clip) {
+      bar.innerHTML = `<span class="cliptext"><b>${selected.size} runs selected</b><small>Tap cards to add or remove</small></span>
+        ${del}<button class="clipdone" data-clipdone>Done</button>`;
+      return;
+    }
+    const km = plannedOf(clip).km;
     bar.innerHTML = `<span class="card-dot ${typeClass(clip.type)}"></span>
-      <span class="cliptext"><b>Copying ${esc(clip.type)}${km !== null ? ` · ${fmtKm(km)} km` : ''}</b>
-      <small>Tap any “Paste” to add it · from ${esc(clip.runner)}, ${fmtDay(parseISO(clip.run_date))}</small></span>
-      <button class="clipdone" data-clipdone>Done</button>`;
+      <span class="cliptext"><b>${esc(clip.type)}${km !== null ? ` · ${fmtKm(km)} km` : ''} · ${esc(clip.runner)}</b>
+      <small>Tap “Paste” to copy · tap cards to select more</small></span>
+      ${del}<button class="clipdone" data-clipdone>Done</button>`;
   }
   // A fresh planned run with src's plan (type, distance, time, matching blocks, notes)
   function planCopy(src, runner, run_date) {
@@ -999,7 +1038,7 @@
       timer: setTimeout(() => {
         press = null;
         const r = runs.get(card.dataset.id);
-        if (r) { suppressClick = true; startClip(r); }
+        if (r) { suppressClick = true; if (selected.size) toggleSelect(r); else startClip(r); }
       }, 450),
     };
   }
@@ -1030,7 +1069,7 @@
     e.preventDefault();
     cancelPress();
     const r = runs.get(card.dataset.id);
-    if (r && clip?.id !== r.id) startClip(r);
+    if (r) { if (selected.size) toggleSelect(r); else startClip(r); }
   });
 
   grid.addEventListener('click', (e) => {
@@ -1039,22 +1078,27 @@
     if (card) {
       const r = runs.get(card.dataset.id);
       if (r && picking) startClip(r);
+      else if (r && selected.size) toggleSelect(r);
       else if (r) openEditor(r);
       return;
     }
     const add = e.target.closest('[data-add]');
     if (!add) return;
-    if (picking) { toast('Tap a card to copy it'); return; }
+    if (picking) { toast('Tap a card to select it'); return; }
+    if (selected.size > 1) { toast('Select just one run to copy it'); return; }
     if (clip) pasteClip(add.dataset.add, add.dataset.date);
     else openEditor({ id: uuid(), runner: add.dataset.add, run_date: add.dataset.date, type: 'Easy', status: 'planned', intervals: [] });
   });
   $('#copyModeBtn').onclick = () => {
-    if (clip || picking) { endClip(); return; }
+    if (selected.size || picking) { endClip(); return; }
     picking = true;
     render();
   };
-  $('#clipbar').addEventListener('click', (e) => { if (e.target.closest('[data-clipdone]')) endClip(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && (clip || picking) && !dlg.open) endClip(); });
+  $('#clipbar').addEventListener('click', (e) => {
+    if (e.target.closest('[data-clipdone]')) endClip();
+    else if (e.target.closest('[data-clipdel]')) deleteSelected();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && (selected.size || picking) && !dlg.open) endClip(); });
   $('#colheads').addEventListener('click', (e) => {
     const b = e.target.closest('[data-copy]');
     if (b) copyLastWeek(b.dataset.copy);
